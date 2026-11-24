@@ -1,7 +1,7 @@
 (function () {
   'use strict';
 
-  var VERSAO_PAINEL = '0.2.0';
+  var VERSAO_PAINEL = '0.2.1';
   var API = (window.SISTEMA && window.SISTEMA.api) || '';
   var CHAVE = { sessao: 'painel.sessao', aparelho: 'painel.aparelho', dados: 'painel.dados' };
   var COLECOES = ['clientes', 'processos'];
@@ -16,6 +16,7 @@
     senha_curta: 'A senha precisa ter pelo menos 8 caracteres.',
     senhas_diferentes: 'As duas senhas não são iguais.',
     rede: 'Não foi possível falar com o servidor. Verifique a internet.',
+    erro_interno: 'O servidor encontrou um problema e não concluiu o pedido. Tente de novo; se continuar, avise quem cuida do sistema.',
     sem_servidor: 'O servidor ainda não está ligado.'
   };
 
