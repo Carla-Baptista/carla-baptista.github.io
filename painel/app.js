@@ -1,11 +1,21 @@
 (function () {
   'use strict';
 
-  var VERSAO_PAINEL = '0.2.2';
+  var VERSAO_PAINEL = '0.3.0';
   var API = (window.SISTEMA && window.SISTEMA.api) || '';
   var CHAVE = { sessao: 'painel.sessao', aparelho: 'painel.aparelho', dados: 'painel.dados' };
-  var COLECOES = ['clientes', 'processos'];
+  var COLECOES = ['clientes', 'processos', 'financeiro', 'fixas', 'ajustes'];
   var STATUS_PROCESSO = ['Em andamento', 'Aguardando prazo', 'Suspenso', 'Encerrado'];
+  var FORMAS_PAGAMENTO = ['Pix', 'Boleto', 'Transferência', 'Dinheiro', 'Cartão'];
+  var CATEGORIAS_DESPESA = ['Aluguel', 'Contas (luz, água, internet)', 'Sistemas e assinaturas', 'Anuidade OAB',
+    'Impostos', 'Material de escritório', 'Custas processuais', 'Deslocamento', 'Outros'];
+  var MENSAGEM_COBRANCA_PADRAO = 'Olá, {nome}! Tudo bem?\n' +
+    'Passando para lembrar dos honorários em aberto:\n{lista}\nTotal: {total}\n\n' +
+    'Chave Pix: {pix}\n\n' +
+    'Se já pagou, por favor desconsidere esta mensagem. Qualquer dúvida, estou à disposição.\n' +
+    'Carla Baptista – Advocacia';
+  var MESES = ['janeiro', 'fevereiro', 'março', 'abril', 'maio', 'junho', 'julho', 'agosto', 'setembro',
+    'outubro', 'novembro', 'dezembro'];
 
   var MENSAGENS = {
     senha_incorreta: 'E-mail ou senha incorretos.',
@@ -39,7 +49,7 @@
   var estado = {
     sessao: ler(CHAVE.sessao),
     dados: ler(CHAVE.dados) || dadosVazios(),
-    filtros: { clientes: '', processos: '', status: '' },
+    filtros: { clientes: '', processos: '', status: '', mes: '', tipoFin: '', statusFin: '' },
     sincronizando: false,
     sincronizarDeNovo: false,
     ultimaSinc: null,
@@ -110,6 +120,55 @@
   }
   function novoId(prefixo) {
     return prefixo + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  }
+
+  // ---------- dinheiro e datas ----------
+  /** "1.500,00", "1500", "1500,5", "R$ 1.500" → centavos (NaN se não der para ler). */
+  function paraCentavos(texto) {
+    var t = String(texto || '').replace(/R\$|\s/g, '');
+    if (!t) return NaN;
+    if (t.indexOf(',') !== -1) t = t.replace(/\./g, '').replace(',', '.');
+    else if (/^\d{1,3}(\.\d{3})+$/.test(t)) t = t.replace(/\./g, '');
+    var n = Number(t);
+    return isFinite(n) ? Math.round(n * 100) : NaN;
+  }
+  function centavos(valor) { return Math.round(Number(valor || 0) * 100); }
+  function valorTexto(c) { return (c / 100).toFixed(2); }
+  function fmtReais(c) { return (c / 100).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }); }
+  function fmtValorCampo(valor) {
+    return valor === '' || valor === undefined ? '' : (centavos(valor) / 100).toLocaleString('pt-BR', { minimumFractionDigits: 2 });
+  }
+  function isoLocal(d) {
+    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  }
+  function hoje() { return isoLocal(new Date()); }
+  function mesAtual() { return hoje().slice(0, 7); }
+  function fmtData(iso) {
+    var p = String(iso || '').slice(0, 10).split('-');
+    return p.length === 3 ? p[2] + '/' + p[1] + '/' + p[0] : '';
+  }
+  function nomeMes(aaaamm) {
+    var p = aaaamm.split('-');
+    return MESES[Number(p[1]) - 1] + ' de ' + p[0];
+  }
+  function somarMeses(aaaamm, n) {
+    var p = aaaamm.split('-').map(Number);
+    var d = new Date(p[0], p[1] - 1 + n, 1);
+    return isoLocal(d).slice(0, 7);
+  }
+  /** Mesmo dia em outro mês; se o mês não tiver esse dia (31/02), usa o último dia. */
+  function dataNoMes(diaIso, n) {
+    var p = diaIso.split('-').map(Number);
+    var ultimo = new Date(p[0], p[1] - 1 + n + 1, 0).getDate();
+    return isoLocal(new Date(p[0], p[1] - 1 + n, Math.min(p[2], ultimo)));
+  }
+  function situacao(l) {
+    if (l.pagoEm) return 'pago';
+    return l.vencimento && l.vencimento < hoje() ? 'vencido' : 'pendente';
+  }
+  function ajuste(id, padrao) {
+    var a = estado.dados.registros.ajustes[id];
+    return a && !a.excluido && a.valor !== '' ? a.valor : padrao;
   }
 
   /** Busca por texto (sem acento) e, se tiver números, por CPF/telefone só com números. */
@@ -312,6 +371,7 @@
         estado.semConexao = false;
         salvarDados();
         renderizar();
+        lancarDespesasFixas();
       })
       .catch(function () { estado.semConexao = true; })
       .then(function () {
@@ -332,7 +392,8 @@
     else alvo.textContent = 'Ainda não sincronizado' + txtPend;
   }
 
-  function salvarRegistro(colecao, registro) {
+  /** emLote = true: só guarda (quem chamou redesenha e sincroniza no fim). */
+  function salvarRegistro(colecao, registro, emLote) {
     var agora = new Date().toISOString();
     registro.criadoEm = registro.criadoEm || agora;
     registro.atualizadoEm = agora;
@@ -340,6 +401,7 @@
     estado.dados.pendentes[colecao][registro.id] = registro;
     salvarDados();
     atualizarStatus();
+    if (emLote) return;
     renderizar(true);
     sincronizar();
   }
@@ -370,6 +432,7 @@
     if (rota === 'clientes' && partes[1]) telaCliente(main, partes[1]);
     else if (rota === 'clientes') telaClientes(main);
     else if (rota === 'processos') telaProcessos(main);
+    else if (rota === 'financeiro') telaFinanceiro(main);
     else if (rota === 'configuracoes') telaConfiguracoes(main);
     else telaInicio(main);
     atualizarStatus();
@@ -404,15 +467,22 @@
   function telaInicio(main) {
     var nome = (estado.sessao.usuario && estado.sessao.usuario.nome) || '';
     var emAndamento = ativos('processos').filter(function (p) { return p.status !== 'Encerrado'; }).length;
+    var vencidas = ativos('financeiro').filter(function (l) { return l.tipo === 'receita' && situacao(l) === 'vencido'; });
+    var totalVencido = vencidas.reduce(function (s, l) { return s + centavos(l.valor); }, 0);
     main.append(
       cabecalho('Olá, ' + nome.split(' ')[0]),
       el('div', { class: 'cartoes' }, [
         el('div', { class: 'cartao' }, [el('strong', { texto: String(ativos('clientes').length) }), el('span', { texto: 'clientes' })]),
-        el('div', { class: 'cartao' }, [el('strong', { texto: String(emAndamento) }), el('span', { texto: 'processos não encerrados' })])
+        el('div', { class: 'cartao' }, [el('strong', { texto: String(emAndamento) }), el('span', { texto: 'processos não encerrados' })]),
+        el('a', { class: 'cartao', href: '#/financeiro', id: 'cartao-vencidas' }, [
+          el('strong', { texto: fmtReais(totalVencido) }),
+          el('span', { texto: vencidas.length + ' parcela(s) vencida(s)' })
+        ])
       ]),
       el('div', { class: 'acoes', style: 'margin-top:16px' }, [
         botao('+ Novo cliente', function () { formCliente(); }, 'primario'),
-        botao('+ Novo processo', function () { formProcesso(); })
+        botao('+ Novo processo', function () { formProcesso(); }),
+        botao('+ Honorários', function () { formReceita(); })
       ])
     );
   }
@@ -482,6 +552,21 @@
     var procs = processosDoCliente(c.id);
     main.append(procs.length ? tabelaProcessos(procs, false)
       : vazio('Nenhum processo deste cliente.', 'Cadastrar processo', function () { formProcesso({ clienteId: c.id }); }));
+
+    var lancs = ativos('financeiro').filter(function (l) { return l.clienteId === c.id; });
+    var emAberto = lancs.filter(function (l) { return !l.pagoEm; }).reduce(function (s, l) { return s + centavos(l.valor); }, 0);
+    main.append(el('div', { class: 'cab-view', style: 'margin-top:32px' }, [
+      el('h2', { texto: 'Financeiro', style: 'margin:0;flex:1' }),
+      el('div', { class: 'acoes' }, [
+        botao('+ Honorários', function () { formReceita({ clienteId: c.id }); }),
+        temVencidas(c.id) ? botaoCobrar(c) : null
+      ])
+    ]));
+    if (lancs.length) {
+      main.append(el('p', { texto: 'Em aberto: ' + fmtReais(emAberto) }), tabelaLancamentos(lancs, false));
+    } else {
+      main.append(vazio('Nenhum lançamento deste cliente.'));
+    }
   }
 
   function excluirCliente(c) {
@@ -554,6 +639,10 @@
         botao('Baixar backup (arquivo)', exportarBackup)
       ]),
       el('p', { class: 'explica', texto: 'Além deste botão, o servidor guarda sozinho uma cópia da planilha por dia no seu Google Drive (últimas 30 cópias).' }),
+      el('h2', { texto: 'Cobrança' }),
+      secaoCobranca(),
+      el('h2', { texto: 'Despesas fixas' }),
+      secaoFixas(),
       el('h2', { texto: 'Sair' }),
       botao('Sair deste aparelho', sair, 'perigo')
     );
@@ -567,6 +656,405 @@
     document.body.append(link);
     link.click();
     link.remove();
+  }
+
+  // ---------- financeiro ----------
+  function temVencidas(clienteId) {
+    return ativos('financeiro').some(function (l) {
+      return l.clienteId === clienteId && l.tipo === 'receita' && situacao(l) === 'vencido';
+    });
+  }
+
+  /** Uma mensagem por cliente, com todas as parcelas vencidas dele. */
+  function mensagemCobranca(cliente) {
+    var vencidas = ativos('financeiro').filter(function (l) {
+      return l.clienteId === cliente.id && l.tipo === 'receita' && situacao(l) === 'vencido';
+    }).sort(function (a, b) { return a.vencimento.localeCompare(b.vencimento); });
+    var total = vencidas.reduce(function (s, l) { return s + centavos(l.valor); }, 0);
+    var lista = vencidas.map(function (l) {
+      return '• ' + (l.descricao || 'Honorários') + (l.parcela ? ' (parcela ' + l.parcela + ')' : '') +
+        ' – venceu em ' + fmtData(l.vencimento) + ' – ' + fmtReais(centavos(l.valor));
+    }).join('\n');
+    var pix = ajuste('pix', '');
+    var texto = ajuste('mensagemCobranca', MENSAGEM_COBRANCA_PADRAO);
+    if (!pix) texto = texto.split('\n').filter(function (linha) { return linha.indexOf('{pix}') === -1; }).join('\n');
+    return texto.replace(/\{nome\}/g, String(cliente.nome || '').split(' ')[0])
+      .replace(/\{lista\}/g, lista).replace(/\{total\}/g, fmtReais(total)).replace(/\{pix\}/g, pix);
+  }
+
+  function botaoCobrar(cliente) {
+    var tel = soNumeros(cliente.telefone);
+    if (!tel) return el('span', { class: 'explica', texto: 'Sem telefone cadastrado' });
+    return el('a', {
+      class: 'btn', target: '_blank', rel: 'noopener', texto: 'Cobrar no WhatsApp',
+      href: 'https://wa.me/55' + tel + '?text=' + encodeURIComponent(mensagemCobranca(cliente))
+    });
+  }
+
+  function mostrarAviso(texto, rotuloAcao, acao) {
+    var alvo = $('#aviso');
+    clearTimeout(mostrarAviso.timer);
+    alvo.replaceChildren(el('span', { texto: texto }), rotuloAcao ? botao(rotuloAcao, function () {
+      alvo.hidden = true;
+      acao();
+    }, 'link') : null);
+    alvo.hidden = false;
+    mostrarAviso.timer = setTimeout(function () { alvo.hidden = true; }, 8000);
+  }
+
+  function marcarPago(l) {
+    var antes = l.pagoEm || '';
+    salvarRegistro('financeiro', Object.assign({}, l, { pagoEm: hoje() }));
+    mostrarAviso('Marcado como pago: ' + (l.descricao || '') + ' · ' + fmtReais(centavos(l.valor)), 'Desfazer', function () {
+      var atual = estado.dados.registros.financeiro[l.id];
+      salvarRegistro('financeiro', Object.assign({}, atual, { pagoEm: antes }));
+    });
+  }
+
+  function tabelaLancamentos(itens, comCliente) {
+    itens = itens.slice().sort(function (a, b) { return String(a.vencimento).localeCompare(String(b.vencimento)); });
+    var colunas = ['Vencimento', 'Descrição', 'Valor', 'Situação', ''];
+    if (comCliente) colunas.splice(2, 0, 'Cliente / categoria');
+    var corpo = el('tbody', {}, itens.map(function (l) {
+      var sit = situacao(l);
+      var rotuloSit = sit === 'pago' ? 'Pago em ' + fmtData(l.pagoEm) : sit === 'vencido' ? 'Vencido' : 'A vencer';
+      var acao = sit === 'pago' ? null : botao(l.tipo === 'despesa' ? 'Marcar como paga' : 'Marcar como pago', function (e) {
+        e.stopPropagation();
+        marcarPago(l);
+      }, 'pequeno');
+      var desc = (l.descricao || (l.tipo === 'despesa' ? 'Despesa' : 'Honorários')) + (l.parcela ? ' · ' + l.parcela : '');
+      var celulas = [
+        el('td', { texto: fmtData(l.vencimento) }),
+        el('td', {}, [el('a', { href: '#/financeiro', onclick: function (e) { e.preventDefault(); formLancamento(l); }, texto: desc })]),
+        el('td', { class: 'valor ' + (l.tipo === 'despesa' ? 'saida' : 'entrada'), texto: (l.tipo === 'despesa' ? '− ' : '') + fmtReais(centavos(l.valor)) }),
+        el('td', {}, [el('span', { class: 'selo ' + sit, texto: rotuloSit })]),
+        el('td', {}, [acao])
+      ];
+      if (comCliente) celulas.splice(2, 0, el('td', { texto: l.tipo === 'despesa' ? (l.categoria || '—') : nomeCliente(l.clienteId) }));
+      return el('tr', { 'data-id': l.id, onclick: function (e) { if (!e.target.closest('a, button')) formLancamento(l); } }, celulas);
+    }));
+    var cab = el('thead', {}, [el('tr', {}, colunas.map(function (c) { return el('th', { scope: 'col', texto: c }); }))]);
+    return el('div', { class: 'rolagem' }, [el('table', { class: 'tabela-fin' }, [cab, corpo])]);
+  }
+
+  function telaFinanceiro(main) {
+    var mes = estado.filtros.mes || mesAtual();
+    var doMes = ativos('financeiro').filter(function (l) { return String(l.vencimento).slice(0, 7) === mes; });
+    var soma = function (lista) { return lista.reduce(function (s, l) { return s + centavos(l.valor); }, 0); };
+    var receitas = doMes.filter(function (l) { return l.tipo === 'receita'; });
+    var despesas = doMes.filter(function (l) { return l.tipo === 'despesa'; });
+    var recebido = soma(receitas.filter(function (l) { return l.pagoEm; }));
+    var aReceber = soma(receitas.filter(function (l) { return !l.pagoEm; }));
+    var despPagas = soma(despesas.filter(function (l) { return l.pagoEm; }));
+    var despTotal = soma(despesas);
+
+    main.append(cabecalho('Financeiro', el('div', { class: 'acoes' }, [
+      botao('+ Honorários', function () { formReceita(); }, 'primario'),
+      botao('+ Despesa', function () { formDespesa(); })
+    ])));
+
+    main.append(el('div', { class: 'navega-mes' }, [
+      botao('‹', function () { estado.filtros.mes = somarMeses(mes, -1); renderizar(true); }, 'pequeno'),
+      el('strong', { id: 'mes-atual', texto: nomeMes(mes) }),
+      botao('›', function () { estado.filtros.mes = somarMeses(mes, 1); renderizar(true); }, 'pequeno'),
+      mes !== mesAtual() ? botao('Voltar para o mês atual', function () { estado.filtros.mes = ''; renderizar(true); }, 'link') : null
+    ]));
+    main.querySelector('.navega-mes button').setAttribute('aria-label', 'Mês anterior');
+    main.querySelectorAll('.navega-mes button')[1].setAttribute('aria-label', 'Próximo mês');
+
+    main.append(el('div', { class: 'cartoes' }, [
+      cartaoValor('Recebido', recebido),
+      cartaoValor('A receber', aReceber),
+      cartaoValor('Despesas (pagas ' + fmtReais(despPagas) + ')', despTotal),
+      cartaoValor('Resultado (recebido − despesas pagas)', recebido - despPagas)
+    ]));
+
+    // Cobranças: todas as parcelas vencidas, de qualquer mês, uma linha por cliente.
+    var porCliente = {};
+    ativos('financeiro').forEach(function (l) {
+      if (l.tipo !== 'receita' || situacao(l) !== 'vencido') return;
+      porCliente[l.clienteId] = porCliente[l.clienteId] || { total: 0, n: 0 };
+      porCliente[l.clienteId].total += centavos(l.valor);
+      porCliente[l.clienteId].n += 1;
+    });
+    var idsVencidos = Object.keys(porCliente);
+    if (idsVencidos.length) {
+      main.append(el('h2', { texto: 'Cobranças em atraso' }));
+      main.append(el('ul', { class: 'cobrancas' }, idsVencidos.map(function (id) {
+        var c = estado.dados.registros.clientes[id] || { id: id, nome: '(cliente excluído)' };
+        return el('li', {}, [
+          el('span', {}, [el('a', { href: '#/clientes/' + id, texto: c.nome }),
+            ' · ' + porCliente[id].n + ' parcela(s) · ' + fmtReais(porCliente[id].total)]),
+          botaoCobrar(c)
+        ]);
+      })));
+    }
+
+    main.append(el('h2', { texto: 'Lançamentos de ' + nomeMes(mes) }));
+    var tipo = el('select', { id: 'filtro-tipo', 'aria-label': 'Tipo de lançamento' }, [
+      el('option', { value: '', texto: 'Receitas e despesas' }),
+      el('option', { value: 'receita', texto: 'Só receitas' }),
+      el('option', { value: 'despesa', texto: 'Só despesas' })
+    ]);
+    var sit = el('select', { id: 'filtro-situacao', 'aria-label': 'Situação' }, [
+      el('option', { value: '', texto: 'Todas as situações' }),
+      el('option', { value: 'pendente', texto: 'A vencer' }),
+      el('option', { value: 'vencido', texto: 'Vencidos' }),
+      el('option', { value: 'pago', texto: 'Pagos' })
+    ]);
+    tipo.value = estado.filtros.tipoFin;
+    sit.value = estado.filtros.statusFin;
+    var lista = el('div', { id: 'lista-financeiro' });
+    function desenharLista() {
+      var itens = doMes.filter(function (l) {
+        return (!estado.filtros.tipoFin || l.tipo === estado.filtros.tipoFin) &&
+          (!estado.filtros.statusFin || situacao(l) === estado.filtros.statusFin);
+      });
+      lista.replaceChildren(itens.length ? tabelaLancamentos(itens, true)
+        : vazio(doMes.length ? 'Nenhum lançamento com esses filtros.' : 'Nenhum lançamento neste mês.'));
+    }
+    tipo.addEventListener('change', function () { estado.filtros.tipoFin = tipo.value; desenharLista(); });
+    sit.addEventListener('change', function () { estado.filtros.statusFin = sit.value; desenharLista(); });
+    main.append(el('div', { class: 'filtros' }, [tipo, sit]), lista);
+    desenharLista();
+
+    main.append(el('h2', { texto: 'Últimos 6 meses' }), graficoMeses(mes));
+  }
+
+  function cartaoValor(rotulo, c) {
+    return el('div', { class: 'cartao' }, [el('strong', { texto: fmtReais(c) }), el('span', { texto: rotulo })]);
+  }
+
+  /** Barras agrupadas: recebido × despesas pagas, por mês de vencimento. Uma escala só. */
+  function graficoMeses(mesFinal) {
+    var meses = [];
+    for (var i = 5; i >= 0; i--) meses.push(somarMeses(mesFinal, -i));
+    var linhas = meses.map(function (m) {
+      var r = 0, d = 0;
+      ativos('financeiro').forEach(function (l) {
+        if (!l.pagoEm || String(l.vencimento).slice(0, 7) !== m) return;
+        if (l.tipo === 'receita') r += centavos(l.valor); else d += centavos(l.valor);
+      });
+      return { mes: m, recebido: r, despesas: d };
+    });
+    var maximo = Math.max.apply(null, linhas.map(function (l) { return Math.max(l.recebido, l.despesas); }).concat([1]));
+    var NS = 'http://www.w3.org/2000/svg';
+    function s(tag, attrs, filhos) {
+      var n = document.createElementNS(NS, tag);
+      Object.keys(attrs || {}).forEach(function (k) { n.setAttribute(k, attrs[k]); });
+      (filhos || []).forEach(function (f) { n.append(f); });
+      return n;
+    }
+    var L = 600, A = 220, topo = 16, base = 190, esq = 8;
+    var largGrupo = (L - esq) / 6, largBarra = 22;
+    var svg = s('svg', { viewBox: '0 0 ' + L + ' ' + A, role: 'img', 'aria-label': 'Recebido e despesas pagas nos últimos 6 meses', class: 'grafico' });
+    [0.5, 1].forEach(function (f) {
+      var y = base - (base - topo) * f;
+      svg.append(s('line', { x1: esq, x2: L, y1: y, y2: y, class: 'grade' }),
+        s('text', { x: L, y: y - 4, 'text-anchor': 'end', class: 'eixo' }, [fmtReais(Math.round(maximo * f))]));
+    });
+    svg.append(s('line', { x1: esq, x2: L, y1: base, y2: base, class: 'base' }));
+    function barra(x, valor, classe, titulo) {
+      var h = Math.max((base - topo) * valor / maximo, valor ? 2 : 0);
+      var y = base - h, r = Math.min(4, h);
+      var d = 'M' + x + ',' + base + 'V' + (y + r) + 'Q' + x + ',' + y + ' ' + (x + r) + ',' + y +
+        'H' + (x + largBarra - r) + 'Q' + (x + largBarra) + ',' + y + ' ' + (x + largBarra) + ',' + (y + r) + 'V' + base + 'Z';
+      var g = s('g', { class: 'barra' }, [s('title', {}, [titulo]),
+        s('rect', { x: x - 3, y: topo, width: largBarra + 6, height: base - topo, fill: 'transparent' }),
+        s('path', { d: d, class: classe })]);
+      return g;
+    }
+    linhas.forEach(function (l, i) {
+      var cx = esq + largGrupo * i + largGrupo / 2;
+      var rotulo = MESES[Number(l.mes.slice(5)) - 1].slice(0, 3) + '/' + l.mes.slice(2, 4);
+      svg.append(
+        barra(cx - largBarra - 1, l.recebido, 'serie-recebido', rotulo + ' · recebido ' + fmtReais(l.recebido)),
+        barra(cx + 1, l.despesas, 'serie-despesas', rotulo + ' · despesas pagas ' + fmtReais(l.despesas)),
+        s('text', { x: cx, y: base + 18, 'text-anchor': 'middle', class: 'eixo' }, [rotulo])
+      );
+    });
+    var legenda = el('div', { class: 'legenda' }, [
+      el('span', {}, [el('i', { class: 'amostra serie-recebido' }), 'Recebido']),
+      el('span', {}, [el('i', { class: 'amostra serie-despesas' }), 'Despesas pagas'])
+    ]);
+    var tabelaDados = el('details', { class: 'ver-tabela' }, [
+      el('summary', { texto: 'Ver em tabela' }),
+      el('div', { class: 'rolagem' }, [el('table', {}, [
+        el('thead', {}, [el('tr', {}, ['Mês', 'Recebido', 'Despesas pagas', 'Resultado'].map(function (c) { return el('th', { scope: 'col', texto: c }); }))]),
+        el('tbody', {}, linhas.map(function (l) {
+          return el('tr', {}, [el('td', { texto: nomeMes(l.mes) }), el('td', { texto: fmtReais(l.recebido) }),
+            el('td', { texto: fmtReais(l.despesas) }), el('td', { texto: fmtReais(l.recebido - l.despesas) })]);
+        }))
+      ])])
+    ]);
+    return el('div', { class: 'cartao grafico-caixa' }, [legenda, svg, tabelaDados]);
+  }
+
+  function opcoesClientes() {
+    return [['', 'Escolha o cliente']].concat(ativos('clientes').sort(porNome).map(function (c) { return [c.id, c.nome]; }));
+  }
+  function opcoesProcessos() {
+    return [['', 'Nenhum']].concat(ativos('processos').map(function (p) {
+      return [p.id, (p.numero || '(sem número)') + ' · ' + nomeCliente(p.clienteId)];
+    }));
+  }
+  function opcoesLista(lista) { return lista.map(function (x) { return [x, x]; }); }
+
+  /** Honorários: valor total dividido em parcelas mensais (os centavos que sobram vão na última). */
+  function formReceita(base) {
+    if (!ativos('clientes').length) {
+      alert('Cadastre o cliente primeiro. Os honorários ficam ligados a um cliente.');
+      return;
+    }
+    var campos = [
+      { k: 'clienteId', r: 'Cliente', tipo: 'opcoes', obrig: true, opcoes: opcoesClientes },
+      { k: 'processoId', r: 'Processo (opcional)', tipo: 'opcoes', opcoes: opcoesProcessos },
+      { k: 'descricao', r: 'Descrição', obrig: true },
+      { k: 'valor', r: 'Valor total (R$)', tipo: 'dinheiro', obrig: true },
+      { k: 'parcelas', r: 'Número de parcelas', tipo: 'number', min: 1, max: 60, obrig: true },
+      { k: 'vencimento', r: 'Vencimento da 1ª parcela', tipo: 'date', obrig: true },
+      { k: 'forma', r: 'Forma de pagamento', tipo: 'opcoes', opcoes: function () { return opcoesLista(FORMAS_PAGAMENTO); } }
+    ];
+    var inicial = Object.assign({ descricao: 'Honorários', parcelas: '1', vencimento: hoje(), forma: 'Pix' }, base || {});
+    abrirFormulario('Novos honorários', campos, inicial, function (d) {
+      var n = Number(d.parcelas);
+      var total = centavos(d.valor);
+      var cada = Math.floor(total / n);
+      var grupo = novoId('grp_');
+      estado.filtros.mes = d.vencimento.slice(0, 7);
+      for (var i = 0; i < n; i++) {
+        var valor = i === n - 1 ? total - cada * (n - 1) : cada;
+        salvarRegistro('financeiro', {
+          id: novoId('fin_'), tipo: 'receita', clienteId: d.clienteId, processoId: d.processoId,
+          descricao: d.descricao, valor: valorTexto(valor), vencimento: dataNoMes(d.vencimento, i),
+          pagoEm: '', forma: d.forma, grupoId: grupo, parcela: n > 1 ? (i + 1) + '/' + n : ''
+        }, i < n - 1);
+      }
+    });
+  }
+
+  function formDespesa() {
+    var campos = [
+      { k: 'descricao', r: 'Descrição', obrig: true },
+      { k: 'categoria', r: 'Categoria', tipo: 'opcoes', opcoes: function () { return opcoesLista(CATEGORIAS_DESPESA); } },
+      { k: 'valor', r: 'Valor (R$)', tipo: 'dinheiro', obrig: true },
+      { k: 'vencimento', r: 'Vencimento', tipo: 'date', obrig: true },
+      { k: 'paga', r: 'Situação', tipo: 'opcoes', opcoes: function () { return [['', 'A pagar'], ['sim', 'Já paga']]; } }
+    ];
+    abrirFormulario('Nova despesa', campos, { categoria: 'Outros', vencimento: hoje() }, function (d) {
+      estado.filtros.mes = d.vencimento.slice(0, 7);
+      salvarRegistro('financeiro', {
+        id: novoId('fin_'), tipo: 'despesa', descricao: d.descricao, categoria: d.categoria,
+        valor: d.valor, vencimento: d.vencimento, pagoEm: d.paga ? hoje() : ''
+      });
+    });
+  }
+
+  /** Editar um lançamento já existente (uma parcela ou uma despesa). */
+  function formLancamento(l) {
+    var campos = [{ k: 'descricao', r: 'Descrição', obrig: true }];
+    if (l.tipo === 'despesa') campos.push({ k: 'categoria', r: 'Categoria', tipo: 'opcoes', opcoes: function () { return opcoesLista(CATEGORIAS_DESPESA); } });
+    else campos.push({ k: 'clienteId', r: 'Cliente', tipo: 'opcoes', obrig: true, opcoes: opcoesClientes },
+      { k: 'forma', r: 'Forma de pagamento', tipo: 'opcoes', opcoes: function () { return opcoesLista(FORMAS_PAGAMENTO); } });
+    campos.push({ k: 'valor', r: 'Valor (R$)', tipo: 'dinheiro', obrig: true },
+      { k: 'vencimento', r: 'Vencimento', tipo: 'date', obrig: true },
+      { k: 'pagoEm', r: 'Pago em (deixe vazio se não foi pago)', tipo: 'date' });
+    var titulo = l.tipo === 'despesa' ? 'Editar despesa' : 'Editar honorários' + (l.parcela ? ' · parcela ' + l.parcela : '');
+    abrirFormulario(titulo, campos, l, function (d) { salvarRegistro('financeiro', d); });
+    $('#janela .acoes').prepend(botao('Excluir', function () {
+      if (!confirm('Excluir este lançamento?')) return;
+      $('#janela').close();
+      salvarRegistro('financeiro', Object.assign({}, l, { excluido: true }));
+    }, 'perigo'));
+  }
+
+  // ---------- despesas fixas e ajustes ----------
+
+  /**
+   * Lança no mês atual as despesas fixas ativas que ainda não foram lançadas.
+   * O id vem da despesa fixa + mês: dois aparelhos ao mesmo tempo geram o mesmo id, sem duplicar.
+   * Só roda depois de uma sincronização bem-sucedida (para não sobrescrever o que já está pago).
+   */
+  function lancarDespesasFixas() {
+    if (!estado.ultimaSinc) return;
+    var mes = mesAtual();
+    var criou = false;
+    ativos('fixas').forEach(function (f) {
+      if (f.ativa !== 'sim') return;
+      var id = 'fx_' + f.id + '_' + mes.replace('-', '');
+      if (estado.dados.registros.financeiro[id]) return;
+      var ultimoDia = new Date(Number(mes.slice(0, 4)), Number(mes.slice(5)), 0).getDate();
+      var dia = String(Math.min(Number(f.dia) || 1, ultimoDia)).padStart(2, '0');
+      salvarRegistro('financeiro', {
+        id: id, tipo: 'despesa', descricao: f.descricao, categoria: f.categoria, valor: f.valor,
+        vencimento: mes + '-' + dia, pagoEm: '', fixaId: f.id
+      }, true);
+      criou = true;
+    });
+    if (criou) { renderizar(); sincronizar(); }
+  }
+
+  function formFixa(f) {
+    var campos = [
+      { k: 'descricao', r: 'Descrição (ex.: Aluguel da sala)', obrig: true },
+      { k: 'categoria', r: 'Categoria', tipo: 'opcoes', opcoes: function () { return opcoesLista(CATEGORIAS_DESPESA); } },
+      { k: 'valor', r: 'Valor mensal (R$)', tipo: 'dinheiro', obrig: true },
+      { k: 'dia', r: 'Dia do vencimento', tipo: 'number', min: 1, max: 31, obrig: true },
+      { k: 'ativa', r: 'Lançar todo mês?', tipo: 'opcoes', opcoes: function () { return [['sim', 'Sim'], ['nao', 'Não (pausada)']]; } }
+    ];
+    abrirFormulario(f ? 'Editar despesa fixa' : 'Nova despesa fixa', campos,
+      f || { id: novoId('fix_'), categoria: 'Aluguel', dia: '10', ativa: 'sim' }, function (d) {
+        salvarRegistro('fixas', d);
+        lancarDespesasFixas();
+      });
+  }
+
+  function secaoCobranca() {
+    var pix = el('input', { id: 'ajuste-pix', value: ajuste('pix', ''), autocomplete: 'off' });
+    var msg = el('textarea', { id: 'ajuste-mensagem', value: ajuste('mensagemCobranca', MENSAGEM_COBRANCA_PADRAO), rows: '9' });
+    var ok = el('p', { class: 'msg-ok', role: 'status' });
+    var form = el('form', { class: 'form-ajustes' }, [
+      el('div', { class: 'campo' }, [el('label', { for: 'ajuste-pix', texto: 'Chave Pix do escritório' }), pix]),
+      el('div', { class: 'campo' }, [
+        el('label', { for: 'ajuste-mensagem', texto: 'Mensagem de cobrança pelo WhatsApp' }),
+        el('small', { class: 'explica', texto: 'Use {nome}, {lista} (parcelas vencidas), {total} e {pix}. A linha com {pix} some se a chave estiver vazia.' }),
+        msg
+      ]),
+      el('div', { class: 'acoes' }, [
+        el('button', { type: 'submit', class: 'btn primario', texto: 'Salvar' }),
+        botao('Voltar ao texto padrão', function () { msg.value = MENSAGEM_COBRANCA_PADRAO; })
+      ]),
+      ok
+    ]);
+    form.addEventListener('submit', function (e) {
+      e.preventDefault();
+      [['pix', pix.value.trim()], ['mensagemCobranca', msg.value]].forEach(function (par) {
+        var atual = estado.dados.registros.ajustes[par[0]] || { id: par[0] };
+        salvarRegistro('ajustes', Object.assign({}, atual, { valor: par[1], excluido: false }), true);
+      });
+      sincronizar();
+      ok.textContent = 'Salvo.';
+    });
+    return form;
+  }
+
+  function secaoFixas() {
+    var fixas = ativos('fixas').sort(function (a, b) { return Number(a.dia) - Number(b.dia); });
+    var caixa = el('div', {}, [
+      el('p', { class: 'explica', texto: 'São lançadas sozinhas no começo de cada mês, como despesa a pagar.' }),
+      el('div', { class: 'acoes', style: 'margin-bottom:12px' }, [botao('+ Despesa fixa', function () { formFixa(); })])
+    ]);
+    if (!fixas.length) {
+      caixa.append(vazio('Nenhuma despesa fixa cadastrada (aluguel, internet, sistemas…).'));
+      return caixa;
+    }
+    caixa.append(tabela(['Descrição', 'Valor', 'Dia', 'Situação'], fixas.map(function (f) {
+      return {
+        id: f.id, href: '#/configuracoes', abrir: function () { formFixa(f); },
+        celulas: [f.descricao, fmtReais(centavos(f.valor)), 'todo dia ' + f.dia, f.ativa === 'sim' ? 'Ativa' : 'Pausada']
+      };
+    })));
+    return caixa;
   }
 
   // ---------- formulários ----------
@@ -583,7 +1071,9 @@
       else if (c.tipo === 'opcoes') {
         ctrl = el('select', {}, c.opcoes().map(function (o) { return el('option', { value: o[0], texto: o[1] }); }));
         ctrl.value = valor || (c.padrao || '');
-      } else if (c.tipo === 'cpf') ctrl = el('input', { inputmode: 'numeric', value: fmtCpf(valor), autocomplete: 'off' });
+      } else if (c.tipo === 'dinheiro') ctrl = el('input', { inputmode: 'decimal', value: fmtValorCampo(valor), placeholder: '0,00', autocomplete: 'off' });
+      else if (c.tipo === 'number') ctrl = el('input', { type: 'number', inputmode: 'numeric', min: c.min, max: c.max, step: '1', value: valor });
+      else if (c.tipo === 'cpf') ctrl = el('input', { inputmode: 'numeric', value: fmtCpf(valor), autocomplete: 'off' });
       else if (c.tipo === 'tel') ctrl = el('input', { type: 'tel', value: fmtTel(valor), autocomplete: 'off' });
       else ctrl = el('input', { type: c.tipo || 'text', value: valor, autocomplete: 'off' });
       if (c.obrig) ctrl.required = true;
@@ -608,6 +1098,19 @@
         if (c.tipo === 'cpf' || c.tipo === 'tel') v = soNumeros(v);
         if (c.tipo === 'cpf' && v && v.length !== 11) { erro.textContent = 'O CPF precisa ter 11 números.'; controles[c.k].focus(); return; }
         if (c.obrig && !v) { erro.textContent = 'Preencha o campo "' + c.r + '".'; controles[c.k].focus(); return; }
+        if (c.tipo === 'dinheiro' && v) {
+          var cent = paraCentavos(v);
+          if (!(cent > 0)) { erro.textContent = 'Valor inválido em "' + c.r + '". Exemplo: 1.500,00'; controles[c.k].focus(); return; }
+          v = valorTexto(cent);
+        }
+        if (c.tipo === 'number' && v) {
+          var num = Number(v);
+          if (!Number.isInteger(num) || (c.min !== undefined && num < c.min) || (c.max !== undefined && num > c.max)) {
+            erro.textContent = '"' + c.r + '" precisa ser um número de ' + c.min + ' a ' + c.max + '.';
+            controles[c.k].focus();
+            return;
+          }
+        }
         dados[c.k] = v;
       }
       janela.close();
