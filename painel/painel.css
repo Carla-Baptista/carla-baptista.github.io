@@ -217,6 +217,11 @@ a.cartao:hover { border-color: var(--dourado); }
 }
 .aviso .btn.link { color: #e6d3b0; }
 
+.tabela-parceiros td.forte { font-weight: 700; }
+.tabela-parceiros td.alerta { color: var(--perigo); font-weight: 600; }
+.parceiro { margin-top: 32px; }
+.parceiro h2 { border-bottom: 1px solid var(--dourado); padding-bottom: 4px; }
+#total-repassar { font-weight: 600; margin: 12px 0 0; }
 .obs-lanc { display: block; color: var(--suave); font-size: 0.8rem; margin-top: 2px; }
 .previa ul { margin: 8px 0; padding-left: 20px; }
 .previa details { margin: 8px 0; }

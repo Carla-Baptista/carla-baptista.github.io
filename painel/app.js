@@ -1,7 +1,7 @@
 (function () {
   'use strict';
 
-  var VERSAO_PAINEL = '0.5.0';
+  var VERSAO_PAINEL = '0.6.0';
   var API = (window.SISTEMA && window.SISTEMA.api) || '';
   var CHAVE = { sessao: 'painel.sessao', aparelho: 'painel.aparelho', dados: 'painel.dados' };
   var COLECOES = ['clientes', 'processos', 'financeiro', 'fixas', 'ajustes', 'agenda'];
@@ -49,7 +49,7 @@
   var estado = {
     sessao: ler(CHAVE.sessao),
     dados: ler(CHAVE.dados) || dadosVazios(),
-    filtros: { clientes: '', processos: '', status: '', mes: '', tipoFin: '', statusFin: '' },
+    filtros: { clientes: '', processos: '', status: '', mes: '', tipoFin: '', statusFin: '', mesParceiros: '' },
     sincronizando: false,
     sincronizarDeNovo: false,
     ultimaSinc: null,
@@ -435,6 +435,7 @@
     else if (rota === 'processos') telaProcessos(main);
     else if (rota === 'financeiro') telaFinanceiro(main);
     else if (rota === 'agenda') telaAgenda(main);
+    else if (rota === 'parceiros') telaParceiros(main);
     else if (rota === 'configuracoes') telaConfiguracoes(main);
     else telaInicio(main);
     atualizarStatus();
@@ -1230,6 +1231,187 @@
       };
     })));
     return caixa;
+  }
+
+  // ---------- parceiros (repasse) ----------
+  // Regras combinadas (24/11/2026): o parceiro só tem direito depois que o cliente paga;
+  // acerto uma vez por mês (pelo mês do pagamento); "Adir e Julia" é um repasse só.
+
+  /** Valor do parceiro na parcela: o informado, ou o percentual × valor (ex.: "30% + 10%" = 40%). */
+  function valorDoParceiro(l) {
+    if (l.valorParceiro !== undefined && l.valorParceiro !== '') return centavos(l.valorParceiro);
+    var pct = String(l.comissao || '').match(/\d+(?:[.,]\d+)?/g);
+    if (!pct) return 0;
+    var soma = pct.reduce(function (s, p) { return s + Number(p.replace(',', '.')); }, 0);
+    return Math.round(centavos(l.valor) * soma / 100);
+  }
+
+  function parcelasDeParceiro() {
+    return ativos('financeiro').filter(function (l) { return l.tipo === 'receita' && l.parceiro; });
+  }
+
+  function marcarRepasse(itens, data) {
+    var antes = itens.map(function (l) { return { id: l.id, repassadoEm: l.repassadoEm || '' }; });
+    itens.forEach(function (l) {
+      salvarRegistro('financeiro', Object.assign({}, estado.dados.registros.financeiro[l.id], { repassadoEm: data }), true);
+    });
+    renderizar(true);
+    sincronizar();
+    return antes;
+  }
+
+  function telaParceiros(main) {
+    var mes = estado.filtros.mesParceiros || mesAtual();
+    var todas = parcelasDeParceiro();
+    var nomes = [];
+    todas.forEach(function (l) { if (nomes.indexOf(l.parceiro) === -1) nomes.push(l.parceiro); });
+    nomes.sort(function (a, b) { return a.localeCompare(b, 'pt-BR'); });
+
+    main.append(cabecalho('Repasse aos parceiros'));
+    main.append(el('p', { class: 'explica', texto: 'O parceiro entra no acerto do mês em que o cliente pagou. Parcelas ainda não pagas aparecem só como previsão.' }));
+    main.append(el('div', { class: 'navega-mes' }, [
+      botao('‹', function () { estado.filtros.mesParceiros = somarMeses(mes, -1); renderizar(true); }, 'pequeno'),
+      el('strong', { texto: 'Acerto de ' + nomeMes(mes) }),
+      botao('›', function () { estado.filtros.mesParceiros = somarMeses(mes, 1); renderizar(true); }, 'pequeno'),
+      mes !== mesAtual() ? botao('Voltar para o mês atual', function () { estado.filtros.mesParceiros = ''; renderizar(true); }, 'link') : null
+    ]));
+    var navs = main.querySelectorAll('.navega-mes button');
+    navs[0].setAttribute('aria-label', 'Mês anterior');
+    navs[1].setAttribute('aria-label', 'Próximo mês');
+
+    if (!nomes.length) {
+      main.append(vazio('Nenhum honorário com parceiro. Informe o parceiro ao editar uma parcela no Financeiro.'));
+      return;
+    }
+
+    var inicioMes = mes + '-01';
+    var resumo = nomes.map(function (nome) {
+      var dele = todas.filter(function (l) { return l.parceiro === nome; });
+      var pagasNoMes = dele.filter(function (l) { return l.pagoEm && l.pagoEm.slice(0, 7) === mes; });
+      var atrasados = dele.filter(function (l) { return l.pagoEm && l.pagoEm < inicioMes && !l.repassadoEm; });
+      var previstas = dele.filter(function (l) { return !l.pagoEm && String(l.vencimento).slice(0, 7) === mes; });
+      var soma = function (lista) { return lista.reduce(function (s, l) { return s + valorDoParceiro(l); }, 0); };
+      return {
+        nome: nome, pagasNoMes: pagasNoMes, atrasados: atrasados, previstas: previstas,
+        devidoMes: soma(pagasNoMes),
+        repassadoMes: soma(pagasNoMes.filter(function (l) { return l.repassadoEm; })),
+        pendenteMes: soma(pagasNoMes.filter(function (l) { return !l.repassadoEm; })),
+        pendenteAntigo: soma(atrasados),
+        previsto: soma(previstas)
+      };
+    });
+
+    var totalPendente = resumo.reduce(function (s, r) { return s + r.pendenteMes + r.pendenteAntigo; }, 0);
+    main.append(el('div', { class: 'rolagem' }, [el('table', { class: 'tabela-parceiros' }, [
+      el('thead', {}, [el('tr', {}, ['Parceiro', 'Devido no mês', 'Já repassado', 'A repassar', 'Pendente de meses anteriores', 'Previsto (cliente ainda não pagou)']
+        .map(function (c) { return el('th', { scope: 'col', texto: c }); }))]),
+      el('tbody', {}, resumo.map(function (r) {
+        return el('tr', { onclick: function () { var alvo = document.getElementById('parc-' + idSeguro(r.nome)); if (alvo) alvo.scrollIntoView(); } }, [
+          el('td', {}, [el('a', { href: '#/parceiros', onclick: function (e) { e.preventDefault(); }, texto: r.nome })]),
+          el('td', { class: 'valor', texto: fmtReais(r.devidoMes) }),
+          el('td', { class: 'valor', texto: fmtReais(r.repassadoMes) }),
+          el('td', { class: 'valor forte', texto: fmtReais(r.pendenteMes) }),
+          el('td', { class: 'valor' + (r.pendenteAntigo ? ' alerta' : ''), texto: fmtReais(r.pendenteAntigo) }),
+          el('td', { class: 'valor saida', texto: fmtReais(r.previsto) })
+        ]);
+      }))
+    ])]));
+    main.append(el('p', { id: 'total-repassar', texto: 'Total a repassar (este mês + pendências): ' + fmtReais(totalPendente) }));
+
+    resumo.forEach(function (r) {
+      var secao = el('section', { class: 'parceiro', id: 'parc-' + idSeguro(r.nome) });
+      var pendentes = r.pagasNoMes.filter(function (l) { return !l.repassadoEm; }).concat(r.atrasados);
+      secao.append(el('div', { class: 'cab-view' }, [
+        el('h2', { texto: r.nome, style: 'margin:0;flex:1' }),
+        el('div', { class: 'acoes' }, [
+          pendentes.length ? botao('Marcar repasse como feito (' + fmtReais(r.pendenteMes + r.pendenteAntigo) + ')', function () {
+            if (!confirm('Registrar que ' + fmtReais(r.pendenteMes + r.pendenteAntigo) + ' foram repassados a ' + r.nome + ' hoje?')) return;
+            var antes = marcarRepasse(pendentes, hoje());
+            mostrarAviso('Repasse registrado para ' + r.nome + '.', 'Desfazer', function () {
+              antes.forEach(function (a) {
+                salvarRegistro('financeiro', Object.assign({}, estado.dados.registros.financeiro[a.id], { repassadoEm: a.repassadoEm }), true);
+              });
+              renderizar(true);
+              sincronizar();
+            });
+          }, 'primario') : null,
+          // Para o histórico importado: o que já foi acertado fora do sistema.
+          r.atrasados.length ? botao('Meses anteriores já foram acertados', function () {
+            if (!confirm('Marcar as ' + r.atrasados.length + ' parcela(s) de meses anteriores de ' + r.nome +
+              ' como já repassadas (com a data em que o cliente pagou)?')) return;
+            r.atrasados.forEach(function (l) {
+              salvarRegistro('financeiro', Object.assign({}, estado.dados.registros.financeiro[l.id], { repassadoEm: l.pagoEm }), true);
+            });
+            renderizar(true);
+            sincronizar();
+          }) : null,
+          botao('Extrato do mês', function () { abrirExtrato(r, mes); })
+        ])
+      ]));
+      var linhas = r.atrasados.concat(r.pagasNoMes);
+      if (!linhas.length) {
+        secao.append(vazio('Nenhuma parcela paga com ' + r.nome + ' em ' + nomeMes(mes) + '.'));
+      } else {
+        secao.append(tabelaRepasse(linhas, mes));
+      }
+      main.append(secao);
+    });
+  }
+
+  function idSeguro(t) { return semAcento(t).replace(/[^a-z0-9]+/g, '-'); }
+
+  function tabelaRepasse(linhas, mes) {
+    linhas = linhas.slice().sort(function (a, b) { return String(a.pagoEm).localeCompare(String(b.pagoEm)); });
+    return el('div', { class: 'rolagem' }, [el('table', {}, [
+      el('thead', {}, [el('tr', {}, ['Pago pelo cliente em', 'Cliente', 'Parcela', 'Valor da parcela', '%', 'Parte do parceiro', 'Repasse']
+        .map(function (c) { return el('th', { scope: 'col', texto: c }); }))]),
+      el('tbody', {}, linhas.map(function (l) {
+        var antigo = l.pagoEm.slice(0, 7) < mes;
+        return el('tr', { 'data-id': l.id, onclick: function () { formLancamento(l); } }, [
+          el('td', { texto: fmtData(l.pagoEm) + (antigo ? ' (mês anterior)' : '') }),
+          el('td', { texto: nomeCliente(l.clienteId) }),
+          el('td', { texto: (l.descricao || 'Honorários') + (l.parcela ? ' · ' + l.parcela : '') }),
+          el('td', { class: 'valor', texto: fmtReais(centavos(l.valor)) }),
+          el('td', { texto: l.comissao || '—' }),
+          el('td', { class: 'valor', texto: fmtReais(valorDoParceiro(l)) }),
+          el('td', {}, [el('span', { class: 'selo ' + (l.repassadoEm ? 'pago' : antigo ? 'vencido' : 'pendente'),
+            texto: l.repassadoEm ? 'Repassado em ' + fmtData(l.repassadoEm) : 'A repassar' })])
+        ]);
+      }))
+    ])]);
+  }
+
+  /** Extrato em página própria, pronto para imprimir ou salvar como PDF pelo navegador. */
+  function abrirExtrato(r, mes) {
+    var linhas = r.atrasados.concat(r.pagasNoMes).sort(function (a, b) { return String(a.pagoEm).localeCompare(String(b.pagoEm)); });
+    var esc = function (t) { return String(t === undefined || t === null ? '' : t).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); };
+    var corpo = linhas.map(function (l) {
+      return '<tr><td>' + esc(fmtData(l.pagoEm)) + '</td><td>' + esc(nomeCliente(l.clienteId)) + '</td><td>' +
+        esc((l.descricao || 'Honorários') + (l.parcela ? ' · ' + l.parcela : '')) + '</td><td class="v">' + esc(fmtReais(centavos(l.valor))) +
+        '</td><td>' + esc(l.comissao || '') + '</td><td class="v">' + esc(fmtReais(valorDoParceiro(l))) + '</td><td>' +
+        esc(l.repassadoEm ? 'Repassado em ' + fmtData(l.repassadoEm) : 'A repassar') + '</td></tr>';
+    }).join('');
+    var total = linhas.reduce(function (s, l) { return s + valorDoParceiro(l); }, 0);
+    var html = '<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>Extrato ' + esc(r.nome) + ' – ' + esc(nomeMes(mes)) + '</title>' +
+      '<style>body{font-family:Georgia,serif;color:#2b1d14;margin:32px;}h1{font-weight:normal;margin:0}p{margin:4px 0}' +
+      'table{border-collapse:collapse;width:100%;margin-top:20px;font-family:system-ui,sans-serif;font-size:13px}' +
+      'th,td{border-bottom:1px solid #e4dccd;padding:6px 8px;text-align:left}th{background:#f7f2e9}.v{text-align:right;white-space:nowrap}' +
+      '.cab{border-bottom:2px solid #b08d57;padding-bottom:12px}.tot{margin-top:16px;font-size:16px}' +
+      '@media print{button{display:none}body{margin:16mm}}</style></head><body>' +
+      '<div class="cab"><h1>Carla Baptista Advocacia</h1><p>OAB/PR 74.479 · Cascavel/PR</p></div>' +
+      '<h2 style="font-weight:normal">Extrato de repasse – ' + esc(r.nome) + '</h2>' +
+      '<p>Referente a ' + esc(nomeMes(mes)) + ' (parcelas pagas pelos clientes no mês' + (r.atrasados.length ? ' e pendências anteriores' : '') + ').</p>' +
+      '<table><thead><tr><th>Pago em</th><th>Cliente</th><th>Parcela</th><th class="v">Valor</th><th>%</th><th class="v">Parte do parceiro</th><th>Situação</th></tr></thead><tbody>' +
+      (corpo || '<tr><td colspan="7">Nenhuma parcela neste período.</td></tr>') + '</tbody></table>' +
+      '<p class="tot">Total do parceiro: <strong>' + esc(fmtReais(total)) + '</strong> · já repassado: ' + esc(fmtReais(r.repassadoMes)) +
+      ' · a repassar: <strong>' + esc(fmtReais(r.pendenteMes + r.pendenteAntigo)) + '</strong></p>' +
+      '<p style="margin-top:24px;color:#6b5a4c;font-size:12px">Gerado em ' + esc(new Date().toLocaleString('pt-BR')) + '</p>' +
+      '<p><button onclick="window.print()">Imprimir ou salvar em PDF</button></p></body></html>';
+    var janela = window.open('', '_blank');
+    if (!janela) { alert('O navegador bloqueou a janela do extrato. Permita pop-ups para este site.'); return; }
+    janela.document.open();
+    janela.document.write(html);
+    janela.document.close();
   }
 
   // ---------- importação ----------
