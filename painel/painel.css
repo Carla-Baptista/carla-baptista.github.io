@@ -217,6 +217,11 @@ a.cartao:hover { border-color: var(--dourado); }
 }
 .aviso .btn.link { color: #e6d3b0; }
 
+.obs-lanc { display: block; color: var(--suave); font-size: 0.8rem; margin-top: 2px; }
+.previa ul { margin: 8px 0; padding-left: 20px; }
+.previa details { margin: 8px 0; }
+.previa details li { font-size: 0.88rem; color: var(--suave); }
+
 /* ---------- janela (formulários) ---------- */
 .janela {
   border: none;

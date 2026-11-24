@@ -1,7 +1,7 @@
 (function () {
   'use strict';
 
-  var VERSAO_PAINEL = '0.4.0';
+  var VERSAO_PAINEL = '0.5.0';
   var API = (window.SISTEMA && window.SISTEMA.api) || '';
   var CHAVE = { sessao: 'painel.sessao', aparelho: 'painel.aparelho', dados: 'painel.dados' };
   var COLECOES = ['clientes', 'processos', 'financeiro', 'fixas', 'ajustes', 'agenda'];
@@ -550,6 +550,7 @@
       ['Telefone', tel ? el('span', {}, [fmtTel(tel) + ' · ', el('a', { href: 'https://wa.me/55' + tel, target: '_blank', rel: 'noopener', texto: 'abrir no WhatsApp' })]) : ''],
       ['E-mail', c.email ? el('a', { href: 'mailto:' + c.email, texto: c.email }) : ''],
       ['Endereço', c.endereco],
+      ['Cidade', c.cidade],
       ['Observações', c.observacoes]
     ];
     var ficha = el('dl', { class: 'ficha' });
@@ -653,6 +654,8 @@
       secaoCobranca(),
       el('h2', { texto: 'Despesas fixas' }),
       secaoFixas(),
+      el('h2', { texto: 'Importar dados' }),
+      secaoImportar(),
       el('h2', { texto: 'Sair' }),
       botao('Sair deste aparelho', sair, 'perigo')
     );
@@ -891,7 +894,8 @@
         el('td', { texto: fmtData(l.vencimento) }),
         el('td', {}, [el('a', { href: '#/financeiro', onclick: function (e) { e.preventDefault(); formLancamento(l); }, texto: desc })]),
         el('td', { class: 'valor ' + (l.tipo === 'despesa' ? 'saida' : 'entrada'), texto: (l.tipo === 'despesa' ? '− ' : '') + fmtReais(centavos(l.valor)) }),
-        el('td', {}, [el('span', { class: 'selo ' + sit, texto: rotuloSit })]),
+        el('td', {}, [el('span', { class: 'selo ' + sit, texto: rotuloSit }),
+          l.observacoes ? el('small', { class: 'obs-lanc', texto: l.observacoes.split('\n')[0] }) : null]),
         el('td', {}, [acao])
       ];
       if (comCliente) celulas.splice(2, 0, el('td', { texto: l.tipo === 'despesa' ? (l.categoria || '—') : nomeCliente(l.clienteId) }));
@@ -1123,6 +1127,13 @@
     campos.push({ k: 'valor', r: 'Valor (R$)', tipo: 'dinheiro', obrig: true },
       { k: 'vencimento', r: 'Vencimento', tipo: 'date', obrig: true },
       { k: 'pagoEm', r: 'Pago em (deixe vazio se não foi pago)', tipo: 'date' });
+    if (l.tipo !== 'despesa') {
+      campos.push({ k: 'parceiro', r: 'Parceiro(a) que divide estes honorários' },
+        { k: 'comissao', r: 'Percentual do parceiro (ex.: 40%)' },
+        { k: 'valorParceiro', r: 'Valor do parceiro nesta parcela (R$)', tipo: 'dinheiro' },
+        { k: 'repassadoEm', r: 'Repassado ao parceiro em', tipo: 'date' });
+    }
+    campos.push({ k: 'observacoes', r: 'Observações', tipo: 'area' });
     var titulo = l.tipo === 'despesa' ? 'Editar despesa' : 'Editar honorários' + (l.parcela ? ' · parcela ' + l.parcela : '');
     abrirFormulario(titulo, campos, l, function (d) { salvarRegistro('financeiro', d); });
     $('#janela .acoes').prepend(botao('Excluir', function () {
@@ -1221,6 +1232,89 @@
     return caixa;
   }
 
+  // ---------- importação ----------
+
+  /**
+   * Importa um arquivo gerado pelos conversores (ferramentas/*.js) no computador do escritório.
+   * Registros com id já existente são ignorados: importar de novo não duplica nem desfaz edições.
+   */
+  function secaoImportar() {
+    var arquivo = el('input', { type: 'file', id: 'arquivo-importar', accept: '.json,application/json' });
+    var area = el('div', { id: 'previa-importar' });
+    arquivo.addEventListener('change', function () {
+      estado.msgImportacao = '';
+      area.replaceChildren();
+      var f = arquivo.files[0];
+      if (!f) return;
+      f.text().then(function (texto) {
+        var dados;
+        try { dados = JSON.parse(texto); } catch (e) { dados = null; }
+        if (!dados || dados.formato !== 'painel-importacao' || !dados.dados) {
+          area.append(el('p', { class: 'msg-erro', role: 'alert', texto: 'Este arquivo não é um arquivo de importação do painel.' }));
+          return;
+        }
+        mostrarPreviaImportacao(area, dados, function () { arquivo.value = ''; });
+      });
+    });
+    // A mensagem fica no estado: a tela é redesenhada quando a sincronização termina.
+    if (estado.msgImportacao) area.append(el('p', { class: 'msg-ok', role: 'status', id: 'importacao-ok', texto: estado.msgImportacao }));
+    return el('div', { class: 'form-ajustes' }, [
+      el('p', { class: 'explica', texto: 'Use para trazer dados de planilhas antigas, depois de convertidas no computador do escritório. Importar o mesmo arquivo de novo não duplica nada.' }),
+      el('div', { class: 'campo' }, [el('label', { for: 'arquivo-importar', texto: 'Arquivo de importação (.json)' }), arquivo]),
+      area
+    ]);
+  }
+
+  function mostrarPreviaImportacao(area, arq, aoTerminar) {
+    var colecoes = Object.keys(arq.dados).filter(function (c) { return COLECOES.indexOf(c) !== -1; });
+    var novos = {};
+    var total = 0;
+    colecoes.forEach(function (c) {
+      novos[c] = (arq.dados[c] || []).filter(function (r) { return r && r.id && !estado.dados.registros[c][r.id]; });
+      total += novos[c].length;
+    });
+    var nomes = { clientes: 'clientes', processos: 'processos', financeiro: 'lançamentos financeiros', agenda: 'agendamentos', fixas: 'despesas fixas' };
+    var r = arq.resumo || {};
+    area.replaceChildren(
+      el('div', { class: 'cartao previa' }, [
+        el('strong', { texto: 'Arquivo: ' + (arq.origem || 'importação') }),
+        el('ul', {}, colecoes.map(function (c) {
+          var ja = (arq.dados[c] || []).length - novos[c].length;
+          return el('li', { texto: novos[c].length + ' ' + (nomes[c] || c) + ' novos' + (ja ? ' (' + ja + ' já estavam no sistema)' : '') });
+        })),
+        r.recebido !== undefined ? el('p', { texto: 'Recebido: ' + fmtReais(Math.round(r.recebido * 100)) +
+          ' · Em atraso: ' + fmtReais(Math.round(r.emAtraso * 100)) + ' · A vencer: ' + fmtReais(Math.round(r.aVencer * 100)) }) : null,
+        (arq.avisos || []).length ? el('details', {}, [
+          el('summary', { texto: arq.avisos.length + ' aviso(s) para conferir depois' }),
+          el('ul', {}, arq.avisos.map(function (a) { return el('li', { texto: a }); }))
+        ]) : null,
+        el('div', { class: 'acoes' }, [
+          total ? botao('Importar ' + total + ' registro(s)', function () {
+            colecoes.forEach(function (c) {
+              novos[c].forEach(function (reg) {
+                var copia = Object.assign({}, reg);
+                salvarRegistro(c, copia, true);
+                // Mantém a data de criação original do arquivo.
+                if (reg.criadoEm) estado.dados.registros[c][reg.id].criadoEm = reg.criadoEm;
+              });
+            });
+            salvarDados();
+            estado.msgImportacao = total + ' registro(s) importados. Enviando para a planilha…';
+            area.replaceChildren(el('p', { class: 'msg-ok', role: 'status', id: 'importacao-ok', texto: estado.msgImportacao }));
+            aoTerminar();
+            sincronizar().then(function () {
+              estado.msgImportacao = totalPendentes()
+                ? total + ' registro(s) importados. Ainda enviando para a planilha (sem conexão?).'
+                : total + ' registro(s) importados e salvos na planilha.';
+              var ok = $('#importacao-ok');
+              if (ok) ok.textContent = estado.msgImportacao;
+            });
+          }, 'primario') : el('p', { texto: 'Nada novo para importar: tudo deste arquivo já está no sistema.' })
+        ])
+      ])
+    );
+  }
+
   // ---------- formulários ----------
   function abrirFormulario(titulo, campos, registro, aoSalvar) {
     var janela = $('#janela');
@@ -1294,6 +1388,7 @@
     { k: 'telefone', r: 'Telefone (WhatsApp)', tipo: 'tel' },
     { k: 'email', r: 'E-mail', tipo: 'email' },
     { k: 'endereco', r: 'Endereço completo' },
+    { k: 'cidade', r: 'Cidade - UF' },
     { k: 'observacoes', r: 'Observações', tipo: 'area' }
   ];
 
