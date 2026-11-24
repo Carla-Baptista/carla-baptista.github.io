@@ -1,5 +1,5 @@
 (function () {
-  var VERSAO_PAINEL = '0.1.0';
+  var VERSAO_PAINEL = '0.1.1';
   document.getElementById('versao-painel').textContent = 'versão ' + VERSAO_PAINEL;
 
   var status = document.getElementById('status');

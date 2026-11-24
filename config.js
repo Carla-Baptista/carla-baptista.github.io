@@ -1,4 +1,4 @@
-// Endereço do servidor (Google Apps Script). Fica vazio até o servidor ser publicado.
+// Endereço do servidor (Google Apps Script, conta do escritório).
 window.SISTEMA = {
-  api: ''
+  api: 'https://script.google.com/macros/s/AKfycbz9lJnMDxBRZuRocAy-8X9GlDpG-ZdJ_VE4Bv_oKig8As04gZukVpfZfLqnqTcZpluq/exec'
 };
