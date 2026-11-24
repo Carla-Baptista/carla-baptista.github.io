@@ -159,6 +159,22 @@ td a { color: var(--cafe); font-weight: 600; }
 .ficha dt { color: var(--suave); }
 .ficha dd { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
 
+/* ---------- agenda ---------- */
+.cartao.destaque { border-color: var(--dourado); border-width: 2px; }
+.pedidos { list-style: none; padding: 0; margin: 0; display: grid; gap: 12px; }
+.pedido { background: var(--branco); border: 1px solid var(--linha); border-left: 4px solid var(--dourado); border-radius: 6px; padding: 14px 16px; }
+.pedido p { margin: 4px 0; overflow-wrap: anywhere; }
+.pedido .resumo { color: var(--suave); white-space: pre-wrap; }
+.pedido .acoes { margin-top: 10px; }
+.dias-agenda { display: grid; gap: 12px; }
+.dia-agenda { background: var(--branco); border: 1px solid var(--linha); border-radius: 6px; padding: 12px 16px; }
+.dia-agenda h3 { margin: 0 0 8px; font-family: var(--serifa); font-weight: normal; font-size: 1.05rem; }
+.dia-agenda ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.item-agenda { display: flex; gap: 12px; align-items: baseline; overflow-wrap: anywhere; }
+.item-agenda .hora { font-variant-numeric: tabular-nums; font-weight: 600; min-width: 4.5em; }
+.item-agenda.externo { color: var(--suave); }
+.selo-google { font-size: 0.8rem; color: var(--cafe-claro); }
+
 /* ---------- financeiro ---------- */
 .btn.pequeno { padding: 6px 10px; font-size: 0.88rem; }
 a.btn { display: inline-block; text-decoration: none; }

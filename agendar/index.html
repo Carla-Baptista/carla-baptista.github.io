@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Agendar consulta | Carla Baptista Advocacia</title>
+  <meta name="description" content="Agende uma consulta com a advogada Carla Baptista (OAB/PR 74.479), em Cascavel/PR ou online.">
+  <link rel="stylesheet" href="../estilo.css?v=0.4.0">
+  <link rel="stylesheet" href="agendar.css?v=0.4.0">
+</head>
+<body>
+  <a class="pular" href="#conteudo">Pular para o conteúdo</a>
+
+  <header class="topo">
+    <h1>Agendar consulta</h1>
+    <p class="credenciais">Carla Baptista · Advogada · OAB/PR 74.479 · Cascavel/PR · Presencial e online</p>
+  </header>
+
+  <main id="conteudo">
+    <p>Escolha o dia e o horário que preferir. O pedido fica reservado e a confirmação chega por e-mail.</p>
+
+    <section aria-labelledby="titulo-dia">
+      <h2 id="titulo-dia">1. Dia</h2>
+      <div id="dias" class="opcoes" role="group" aria-labelledby="titulo-dia">
+        <p id="carregando">Carregando horários disponíveis…</p>
+      </div>
+    </section>
+
+    <section aria-labelledby="titulo-hora" id="secao-hora" hidden>
+      <h2 id="titulo-hora">2. Horário</h2>
+      <div id="horas" class="opcoes" role="group" aria-labelledby="titulo-hora"></div>
+    </section>
+
+    <section aria-labelledby="titulo-dados" id="secao-dados" hidden>
+      <h2 id="titulo-dados">3. Seus dados</h2>
+      <p id="escolha" class="escolha"></p>
+      <form id="form-agendar" novalidate>
+        <div class="campo"><label for="nome">Nome completo</label><input id="nome" autocomplete="name" required maxlength="120"></div>
+        <div class="campo"><label for="telefone">Telefone (WhatsApp)</label><input id="telefone" type="tel" autocomplete="tel" inputmode="tel" required placeholder="(45) 99999-9999"></div>
+        <div class="campo"><label for="email">E-mail</label><input id="email" type="email" autocomplete="email" required></div>
+        <div class="campo"><label for="area">Assunto</label><select id="area" required></select></div>
+        <fieldset class="campo">
+          <legend>Como prefere a consulta?</legend>
+          <label class="marcar"><input type="radio" name="modalidade" value="Presencial" checked> Presencial (Av. Afonso Pena, 1570 – Centro)</label>
+          <label class="marcar"><input type="radio" name="modalidade" value="Online"> Online (videochamada)</label>
+        </fieldset>
+        <div class="campo">
+          <label for="resumo">Resumo do assunto (opcional)</label>
+          <textarea id="resumo" maxlength="1000" rows="4" aria-describedby="dica-resumo"></textarea>
+          <small id="dica-resumo">Algumas linhas bastam. Não envie documentos nem dados de outras pessoas por aqui.</small>
+        </div>
+        <div class="escondido" aria-hidden="true">
+          <label for="site">Não preencha este campo</label><input id="site" name="site" tabindex="-1" autocomplete="off">
+        </div>
+        <label class="marcar"><input type="checkbox" id="consentimento" required> Li e concordo com a <a href="../privacidade.html" target="_blank" rel="noopener">política de privacidade</a>.</label>
+        <p id="erro" class="erro" role="alert"></p>
+        <button type="submit" class="botao">Pedir agendamento</button>
+      </form>
+    </section>
+
+    <section id="sucesso" class="sucesso" hidden tabindex="-1" aria-live="polite"></section>
+  </main>
+
+  <footer class="rodape">
+    <p>Carla Baptista · OAB/PR 74.479 · <a href="../privacidade.html">Política de privacidade</a> · <span>versão 0.4.0</span></p>
+  </footer>
+
+  <script src="../config.js?v=0.4.0"></script>
+  <script src="agendar.js?v=0.4.0"></script>
+</body>
+</html>

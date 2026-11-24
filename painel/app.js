@@ -1,10 +1,10 @@
 (function () {
   'use strict';
 
-  var VERSAO_PAINEL = '0.3.0';
+  var VERSAO_PAINEL = '0.4.0';
   var API = (window.SISTEMA && window.SISTEMA.api) || '';
   var CHAVE = { sessao: 'painel.sessao', aparelho: 'painel.aparelho', dados: 'painel.dados' };
-  var COLECOES = ['clientes', 'processos', 'financeiro', 'fixas', 'ajustes'];
+  var COLECOES = ['clientes', 'processos', 'financeiro', 'fixas', 'ajustes', 'agenda'];
   var STATUS_PROCESSO = ['Em andamento', 'Aguardando prazo', 'Suspenso', 'Encerrado'];
   var FORMAS_PAGAMENTO = ['Pix', 'Boleto', 'Transferência', 'Dinheiro', 'Cartão'];
   var CATEGORIAS_DESPESA = ['Aluguel', 'Contas (luz, água, internet)', 'Sistemas e assinaturas', 'Anuidade OAB',
@@ -54,7 +54,8 @@
     sincronizarDeNovo: false,
     ultimaSinc: null,
     semConexao: false,
-    renderPendente: false
+    renderPendente: false,
+    eventos: { lista: [], carregadoEm: 0, erro: false }
   };
   COLECOES.forEach(function (c) {
     estado.dados.registros[c] = estado.dados.registros[c] || {};
@@ -433,6 +434,7 @@
     else if (rota === 'clientes') telaClientes(main);
     else if (rota === 'processos') telaProcessos(main);
     else if (rota === 'financeiro') telaFinanceiro(main);
+    else if (rota === 'agenda') telaAgenda(main);
     else if (rota === 'configuracoes') telaConfiguracoes(main);
     else telaInicio(main);
     atualizarStatus();
@@ -469,9 +471,17 @@
     var emAndamento = ativos('processos').filter(function (p) { return p.status !== 'Encerrado'; }).length;
     var vencidas = ativos('financeiro').filter(function (l) { return l.tipo === 'receita' && situacao(l) === 'vencido'; });
     var totalVencido = vencidas.reduce(function (s, l) { return s + centavos(l.valor); }, 0);
+    var pedidos = pedidosAguardando().length;
+    var consultasHoje = consultasConfirmadas().filter(function (a) { return isoLocal(new Date(a.inicio)) === hoje(); }).length;
     main.append(
       cabecalho('Olá, ' + nome.split(' ')[0]),
       el('div', { class: 'cartoes' }, [
+        el('a', { class: 'cartao' + (pedidos ? ' destaque' : ''), href: '#/agenda', id: 'cartao-pedidos' }, [
+          el('strong', { texto: String(pedidos) }), el('span', { texto: 'pedido(s) do site aguardando' })
+        ]),
+        el('a', { class: 'cartao', href: '#/agenda' }, [
+          el('strong', { texto: String(consultasHoje) }), el('span', { texto: 'consulta(s) hoje' })
+        ]),
         el('div', { class: 'cartao' }, [el('strong', { texto: String(ativos('clientes').length) }), el('span', { texto: 'clientes' })]),
         el('div', { class: 'cartao' }, [el('strong', { texto: String(emAndamento) }), el('span', { texto: 'processos não encerrados' })]),
         el('a', { class: 'cartao', href: '#/financeiro', id: 'cartao-vencidas' }, [
@@ -656,6 +666,160 @@
     document.body.append(link);
     link.click();
     link.remove();
+  }
+
+  // ---------- agenda ----------
+  function rotaAtual() { return location.hash.replace(/^#\/?/, '').split('/')[0] || 'inicio'; }
+
+  function fmtDataHora(iso) {
+    return new Date(iso).toLocaleString('pt-BR', { weekday: 'long', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+  }
+  function horaDe(iso) { return new Date(iso).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }); }
+
+  /** Eventos da Google Agenda (só leitura). Recarrega no máximo a cada 5 minutos. */
+  function carregarEventos(forcar) {
+    if (!estado.sessao || !API) return;
+    if (!forcar && Date.now() - estado.eventos.carregadoEm < 300000) return;
+    estado.eventos.carregadoEm = Date.now();
+    api('eventosAgenda', { token: estado.sessao.token }).then(function (res) {
+      if (!res.ok) {
+        estado.eventos.erro = true;
+        if (res.erro === 'sessao_expirada') sessaoExpirou();
+        return;
+      }
+      estado.eventos.lista = res.eventos;
+      estado.eventos.erro = false;
+      if (rotaAtual() === 'agenda' || rotaAtual() === 'inicio') renderizar();
+    }).catch(function () { estado.eventos.erro = true; });
+  }
+
+  function pedidosAguardando() {
+    return ativos('agenda').filter(function (a) { return a.status === 'aguardando'; })
+      .sort(function (a, b) { return String(a.inicio).localeCompare(String(b.inicio)); });
+  }
+
+  function consultasConfirmadas() {
+    return ativos('agenda').filter(function (a) { return a.status === 'confirmado'; });
+  }
+
+  function responderPedido(a, acao, extra) {
+    if (!navigator.onLine) { alert('Para confirmar ou recusar é preciso estar com internet.'); return; }
+    var botoes = document.querySelectorAll('[data-pedido="' + a.id + '"] button');
+    botoes.forEach(function (b) { b.disabled = true; });
+    api(acao, Object.assign({ token: estado.sessao.token, id: a.id }, extra || {})).then(function (res) {
+      if (!res.ok) {
+        if (res.erro === 'sessao_expirada') return sessaoExpirou();
+        alert(res.erro === 'ja_respondido' ? 'Este pedido já foi respondido (talvez em outro aparelho).' : 'Não foi possível concluir. Tente de novo.');
+        sincronizar();
+        return;
+      }
+      estado.dados.registros.agenda[a.id] = res.registro;
+      salvarDados();
+      mostrarAviso(acao === 'confirmarAgendamento'
+        ? 'Consulta confirmada, colocada na Google Agenda e e-mail enviado ao cliente.'
+        : 'Pedido recusado. O cliente foi avisado por e-mail.');
+      renderizar(true);
+      sincronizar();
+    }).catch(function () {
+      alert('Não foi possível falar com o servidor. Verifique a internet.');
+    }).then(function () { botoes.forEach(function (b) { b.disabled = false; }); });
+  }
+
+  function cadastrarClienteDoPedido(a) {
+    var novo = { id: novoId('cli_'), nome: a.nome, telefone: a.telefone, email: a.email,
+      observacoes: a.resumo ? 'Pedido pelo site (' + a.area + '): ' + a.resumo : '' };
+    abrirFormulario('Cadastrar cliente', CAMPOS_CLIENTE, novo, function (dados) {
+      salvarRegistro('clientes', dados, true);
+      salvarRegistro('agenda', Object.assign({}, a, { clienteId: dados.id }));
+    });
+  }
+
+  function cartaoPedido(a) {
+    var tel = soNumeros(a.telefone);
+    return el('li', { class: 'pedido', 'data-pedido': a.id }, [
+      el('strong', { texto: a.nome }),
+      el('p', { texto: fmtDataHora(a.inicio) + ' · ' + a.modalidade + ' · ' + a.area }),
+      el('p', {}, [
+        tel ? el('a', { href: 'https://wa.me/55' + tel, target: '_blank', rel: 'noopener', texto: fmtTel(tel) }) : null,
+        tel && a.email ? ' · ' : '',
+        a.email ? el('a', { href: 'mailto:' + a.email, texto: a.email }) : null
+      ]),
+      a.resumo ? el('p', { class: 'resumo', texto: a.resumo }) : null,
+      el('div', { class: 'acoes' }, [
+        botao('Confirmar', function () { responderPedido(a, 'confirmarAgendamento'); }, 'primario'),
+        botao('Recusar', function () {
+          var msg = prompt('Recusar o pedido de ' + a.nome + '? Se quiser, escreva uma mensagem para o cliente (ou deixe em branco):', '');
+          if (msg === null) return;
+          responderPedido(a, 'recusarAgendamento', { mensagem: msg });
+        }, 'perigo'),
+        a.clienteId ? el('a', { class: 'btn', href: '#/clientes/' + a.clienteId, texto: 'Ver ficha' })
+          : botao('Cadastrar como cliente', function () { cadastrarClienteDoPedido(a); })
+      ])
+    ]);
+  }
+
+  function telaAgenda(main) {
+    carregarEventos();
+    var linkPublico = location.origin + location.pathname.replace(/painel\/?$/, '') + 'agendar/';
+    main.append(cabecalho('Agenda'));
+
+    var pedidos = pedidosAguardando();
+    main.append(el('h2', { texto: 'Pedidos do site aguardando confirmação' }));
+    main.append(pedidos.length ? el('ul', { class: 'pedidos' }, pedidos.map(cartaoPedido))
+      : vazio('Nenhum pedido aguardando. Os pedidos feitos pelo site aparecem aqui.'));
+
+    // Próximos 30 dias: consultas confirmadas + compromissos da Google Agenda.
+    var agora = new Date();
+    var limite = new Date(agora.getTime() + 31 * 86400000);
+    var itens = consultasConfirmadas().filter(function (a) { return new Date(a.fim) >= agora && new Date(a.inicio) <= limite; })
+      .map(function (a) { return { inicio: a.inicio, consulta: a }; })
+      .concat(estado.eventos.lista.map(function (ev) { return { inicio: ev.inicio, evento: ev }; }))
+      .sort(function (x, y) { return String(x.inicio).localeCompare(String(y.inicio)); });
+
+    main.append(el('h2', { texto: 'Próximos 30 dias' }));
+    if (estado.eventos.erro) main.append(el('p', { class: 'explica', texto: 'Não foi possível ler a Google Agenda agora; mostrando só as consultas do sistema.' }));
+    if (!itens.length) {
+      main.append(vazio('Nada marcado nos próximos 30 dias.'));
+    } else {
+      var porDia = {};
+      var ordem = [];
+      itens.forEach(function (it) {
+        var dia = isoLocal(new Date(it.inicio));
+        if (!porDia[dia]) { porDia[dia] = []; ordem.push(dia); }
+        porDia[dia].push(it);
+      });
+      main.append(el('div', { class: 'dias-agenda' }, ordem.map(function (dia) {
+        var titulo = new Date(dia + 'T12:00:00').toLocaleDateString('pt-BR', { weekday: 'long', day: '2-digit', month: 'long' });
+        return el('section', { class: 'dia-agenda' }, [
+          el('h3', { texto: (dia === hoje() ? 'Hoje · ' : '') + titulo }),
+          el('ul', {}, porDia[dia].map(function (it) {
+            if (it.consulta) {
+              var a = it.consulta;
+              return el('li', { class: 'item-agenda consulta' }, [
+                el('span', { class: 'hora', texto: horaDe(a.inicio) }),
+                el('span', {}, [a.clienteId ? el('a', { href: '#/clientes/' + a.clienteId, texto: a.nome }) : a.nome,
+                  ' · consulta ' + String(a.modalidade).toLowerCase() + ' · ' + a.area])
+              ]);
+            }
+            var ev = it.evento;
+            return el('li', { class: 'item-agenda externo' }, [
+              el('span', { class: 'hora', texto: ev.diaInteiro ? 'dia todo' : horaDe(ev.inicio) }),
+              el('span', {}, [ev.titulo || '(sem título)', ' ',
+                el('a', { href: ev.link, target: '_blank', rel: 'noopener', class: 'selo-google', texto: 'Google Agenda ↗' })])
+            ]);
+          }))
+        ]);
+      })));
+    }
+    main.append(el('p', { class: 'explica', texto: 'Para outros compromissos (audiências, reuniões), use a Google Agenda: eles aparecem aqui e bloqueiam esses horários no site.' }));
+
+    main.append(el('h2', { texto: 'Link para os clientes marcarem' }));
+    var campoLink = el('input', { id: 'link-agendar', value: linkPublico, readonly: true, 'aria-label': 'Link da página de agendamento' });
+    main.append(el('div', { class: 'filtros' }, [campoLink, botao('Copiar link', function () {
+      campoLink.select();
+      (navigator.clipboard ? navigator.clipboard.writeText(linkPublico) : Promise.reject()).catch(function () { document.execCommand('copy'); });
+      mostrarAviso('Link copiado. Cole no site, no WhatsApp ou no Instagram.');
+    })]));
   }
 
   // ---------- financeiro ----------
