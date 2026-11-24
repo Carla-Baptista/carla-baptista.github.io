@@ -5,21 +5,31 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="robots" content="noindex, nofollow">
   <title>Painel | Carla Baptista Advocacia</title>
-  <link rel="stylesheet" href="../estilo.css?v=0.1.1">
+  <link rel="stylesheet" href="painel.css?v=0.2.0">
 </head>
 <body>
-  <header class="topo">
-    <h1>Painel do escritório</h1>
-    <p class="credenciais">Área restrita · em construção</p>
-  </header>
-  <main id="conteudo">
-    <h2>Status do sistema</h2>
-    <p id="status" role="status">Verificando o servidor…</p>
-  </main>
-  <footer class="rodape">
-    <p>Painel <span id="versao-painel"></span></p>
-  </footer>
-  <script src="../config.js?v=0.1.1"></script>
-  <script src="app.js?v=0.1.1"></script>
+  <a class="pular" href="#conteudo">Pular para o conteúdo</a>
+
+  <section id="tela-login" class="tela-login" aria-label="Entrar no painel"></section>
+
+  <div id="app" class="app" hidden>
+    <header class="barra">
+      <span class="marca">Carla Baptista <small>Advocacia</small></span>
+      <span id="sinc" class="sinc" role="status" aria-live="polite"></span>
+    </header>
+    <nav class="menu" aria-label="Menu principal">
+      <a href="#/inicio" data-rota="inicio">Início</a>
+      <a href="#/clientes" data-rota="clientes">Clientes</a>
+      <a href="#/processos" data-rota="processos">Processos</a>
+      <a href="#/configuracoes" data-rota="configuracoes">Configurações</a>
+    </nav>
+    <main id="conteudo" class="conteudo" tabindex="-1"></main>
+    <footer class="rodape-painel">Painel <span id="versao-painel"></span></footer>
+  </div>
+
+  <dialog id="janela" class="janela" aria-labelledby="janela-titulo"></dialog>
+
+  <script src="../config.js?v=0.2.0"></script>
+  <script src="app.js?v=0.2.0"></script>
 </body>
 </html>
