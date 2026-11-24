@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="robots" content="noindex, nofollow">
   <title>Painel | Carla Baptista Advocacia</title>
-  <link rel="stylesheet" href="painel.css?v=0.6.0">
+  <link rel="stylesheet" href="painel.css?v=0.7.0">
 </head>
 <body>
   <a class="pular" href="#conteudo">Pular para o conteúdo</a>
@@ -15,6 +15,7 @@
   <div id="app" class="app" hidden>
     <header class="barra">
       <span class="marca">Carla Baptista <small>Advocacia</small></span>
+      <button type="button" id="botao-buscar" class="botao-buscar" aria-keyshortcuts="Control+K">Buscar <kbd>Ctrl+K</kbd></button>
       <span id="sinc" class="sinc" role="status" aria-live="polite"></span>
     </header>
     <nav class="menu" aria-label="Menu principal">
@@ -32,9 +33,11 @@
 
   <div id="aviso" class="aviso" role="status" aria-live="polite" hidden></div>
 
+  <dialog id="busca-geral" class="janela janela-busca" aria-label="Buscar em todo o painel"></dialog>
+
   <dialog id="janela" class="janela" aria-labelledby="janela-titulo"></dialog>
 
-  <script src="../config.js?v=0.6.0"></script>
-  <script src="app.js?v=0.6.0"></script>
+  <script src="../config.js?v=0.7.0"></script>
+  <script src="app.js?v=0.7.0"></script>
 </body>
 </html>

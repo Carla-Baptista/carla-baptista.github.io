@@ -1,7 +1,7 @@
 (function () {
   'use strict';
 
-  var VERSAO_PAINEL = '0.6.0';
+  var VERSAO_PAINEL = '0.7.0';
   var API = (window.SISTEMA && window.SISTEMA.api) || '';
   var CHAVE = { sessao: 'painel.sessao', aparelho: 'painel.aparelho', dados: 'painel.dados' };
   var COLECOES = ['clientes', 'processos', 'financeiro', 'fixas', 'ajustes', 'agenda'];
@@ -49,7 +49,7 @@
   var estado = {
     sessao: ler(CHAVE.sessao),
     dados: ler(CHAVE.dados) || dadosVazios(),
-    filtros: { clientes: '', processos: '', status: '', mes: '', tipoFin: '', statusFin: '', mesParceiros: '' },
+    filtros: { clientes: '', processos: '', status: '', mes: '', tipoFin: '', statusFin: '', mesParceiros: '', buscaFin: '', buscaAgenda: '', buscaParceiros: '' },
     sincronizando: false,
     sincronizarDeNovo: false,
     ultimaSinc: null,
@@ -179,6 +179,30 @@
     if (textos.some(function (t) { return semAcento(t).indexOf(q) !== -1; })) return true;
     var qn = soNumeros(busca);
     return qn.length >= 3 && numeros.some(function (n) { return soNumeros(n).indexOf(qn) !== -1; });
+  }
+
+  /**
+   * Busca padrão do painel: além dos textos do próprio registro, procura no cliente ligado a ele
+   * (nome, e-mail, cidade, CPF, telefone) e nos números dos processos desse cliente.
+   */
+  function combinaComCliente(busca, textos, numeros, clienteId, processoId) {
+    if (!String(busca || '').trim()) return true;
+    var t = textos.slice();
+    var n = numeros.slice();
+    var c = clienteId && estado.dados.registros.clientes[clienteId];
+    if (c && !c.excluido) { t.push(c.nome, c.email, c.cidade); n.push(c.cpf, c.telefone); }
+    var procs = clienteId ? processosDoCliente(clienteId) : [];
+    var p = processoId && estado.dados.registros.processos[processoId];
+    if (p && procs.indexOf(p) === -1) procs.push(p);
+    procs.forEach(function (x) { t.push(x.numero, x.assunto); n.push(x.numero); });
+    return combina(busca, t, n);
+  }
+
+  /** Campo de busca padrão (mesmo visual e comportamento em todas as telas). */
+  function campoBusca(id, rotulo, placeholder, valor, aoDigitar) {
+    var input = el('input', { type: 'search', id: id, placeholder: placeholder, 'aria-label': rotulo, value: valor || '', autocomplete: 'off' });
+    input.addEventListener('input', function () { aoDigitar(input.value); });
+    return input;
   }
 
   function ativos(colecao) {
@@ -500,7 +524,7 @@
 
   function telaClientes(main) {
     var busca = el('input', {
-      type: 'search', id: 'busca-clientes', placeholder: 'Buscar por nome, CPF, telefone ou e-mail',
+      type: 'search', id: 'busca-clientes', placeholder: 'Buscar por nome, CPF, telefone, e-mail, cidade ou nº do processo…',
       'aria-label': 'Buscar clientes', value: estado.filtros.clientes
     });
     var lista = el('div', { id: 'lista-clientes' });
@@ -516,7 +540,7 @@
   function listaClientes(alvo) {
     var q = estado.filtros.clientes;
     var itens = ativos('clientes').filter(function (c) {
-      return combina(q, [c.nome, c.email], [c.cpf, c.telefone]);
+      return combinaComCliente(q, [c.observacoes], [], c.id);
     }).sort(porNome);
     if (!itens.length) {
       alvo.replaceChildren(q ? vazio('Nenhum cliente encontrado para essa busca.')
@@ -594,7 +618,7 @@
 
   function telaProcessos(main) {
     var busca = el('input', {
-      type: 'search', id: 'busca-processos', placeholder: 'Buscar por número, cliente, vara ou assunto',
+      type: 'search', id: 'busca-processos', placeholder: 'Buscar por nº do processo, cliente, CPF, telefone, vara ou assunto…',
       'aria-label': 'Buscar processos', value: estado.filtros.processos
     });
     var status = el('select', { id: 'filtro-status', 'aria-label': 'Filtrar por status' },
@@ -617,7 +641,7 @@
     var q = estado.filtros.processos;
     var st = estado.filtros.status;
     var itens = ativos('processos').filter(function (p) {
-      return (!st || p.status === st) && combina(q, [p.numero, p.vara, p.assunto, nomeCliente(p.clienteId)], [p.numero]);
+      return (!st || p.status === st) && combinaComCliente(q, [p.numero, p.vara, p.assunto, p.observacoes], [p.numero], p.clienteId);
     });
     if (!itens.length) {
       alvo.replaceChildren(q || st ? vazio('Nenhum processo encontrado com esses filtros.')
@@ -766,24 +790,49 @@
     carregarEventos();
     var linkPublico = location.origin + location.pathname.replace(/painel\/?$/, '') + 'agendar/';
     main.append(cabecalho('Agenda'));
+    var listas = el('div', { id: 'listas-agenda' });
+    main.append(el('div', { class: 'filtros' }, [campoBusca('busca-agenda', 'Buscar na agenda',
+      'Buscar por nome, telefone, e-mail, CPF, assunto ou compromisso…', estado.filtros.buscaAgenda,
+      function (v) { estado.filtros.buscaAgenda = v; desenharListasAgenda(listas); })]), listas);
+    desenharListasAgenda(listas);
 
-    var pedidos = pedidosAguardando();
+    main.append(el('p', { class: 'explica', texto: 'Para outros compromissos (audiências, reuniões), use a Google Agenda: eles aparecem aqui e bloqueiam esses horários no site.' }));
+
+    main.append(el('h2', { texto: 'Link para os clientes marcarem' }));
+    var campoLink = el('input', { id: 'link-agendar', value: linkPublico, readonly: true, 'aria-label': 'Link da página de agendamento' });
+    main.append(el('div', { class: 'filtros' }, [campoLink, botao('Copiar link', function () {
+      campoLink.select();
+      (navigator.clipboard ? navigator.clipboard.writeText(linkPublico) : Promise.reject()).catch(function () { document.execCommand('copy'); });
+      mostrarAviso('Link copiado. Cole no site, no WhatsApp ou no Instagram.');
+    })]));
+  }
+
+  function desenharListasAgenda(alvo) {
+    var q = estado.filtros.buscaAgenda || '';
+    var combinaAgendamento = function (a) {
+      return combinaComCliente(q, [a.nome, a.email, a.area, a.modalidade, a.resumo, a.titulo], [a.telefone], a.clienteId);
+    };
+    alvo.replaceChildren();
+    var main = alvo;
+
+    var pedidos = pedidosAguardando().filter(combinaAgendamento);
     main.append(el('h2', { texto: 'Pedidos do site aguardando confirmação' }));
     main.append(pedidos.length ? el('ul', { class: 'pedidos' }, pedidos.map(cartaoPedido))
-      : vazio('Nenhum pedido aguardando. Os pedidos feitos pelo site aparecem aqui.'));
+      : vazio(q ? 'Nenhum pedido encontrado para essa busca.' : 'Nenhum pedido aguardando. Os pedidos feitos pelo site aparecem aqui.'));
 
     // Próximos 30 dias: consultas confirmadas + compromissos da Google Agenda.
     var agora = new Date();
     var limite = new Date(agora.getTime() + 31 * 86400000);
-    var itens = consultasConfirmadas().filter(function (a) { return new Date(a.fim) >= agora && new Date(a.inicio) <= limite; })
+    var itens = consultasConfirmadas().filter(function (a) { return new Date(a.fim) >= agora && new Date(a.inicio) <= limite && combinaAgendamento(a); })
       .map(function (a) { return { inicio: a.inicio, consulta: a }; })
-      .concat(estado.eventos.lista.map(function (ev) { return { inicio: ev.inicio, evento: ev }; }))
+      .concat(estado.eventos.lista.filter(function (ev) { return combina(q, [ev.titulo], []); })
+        .map(function (ev) { return { inicio: ev.inicio, evento: ev }; }))
       .sort(function (x, y) { return String(x.inicio).localeCompare(String(y.inicio)); });
 
     main.append(el('h2', { texto: 'Próximos 30 dias' }));
     if (estado.eventos.erro) main.append(el('p', { class: 'explica', texto: 'Não foi possível ler a Google Agenda agora; mostrando só as consultas do sistema.' }));
     if (!itens.length) {
-      main.append(vazio('Nada marcado nos próximos 30 dias.'));
+      main.append(vazio(q ? 'Nada encontrado nos próximos 30 dias para essa busca.' : 'Nada marcado nos próximos 30 dias.'));
     } else {
       var porDia = {};
       var ordem = [];
@@ -815,15 +864,6 @@
         ]);
       })));
     }
-    main.append(el('p', { class: 'explica', texto: 'Para outros compromissos (audiências, reuniões), use a Google Agenda: eles aparecem aqui e bloqueiam esses horários no site.' }));
-
-    main.append(el('h2', { texto: 'Link para os clientes marcarem' }));
-    var campoLink = el('input', { id: 'link-agendar', value: linkPublico, readonly: true, 'aria-label': 'Link da página de agendamento' });
-    main.append(el('div', { class: 'filtros' }, [campoLink, botao('Copiar link', function () {
-      campoLink.select();
-      (navigator.clipboard ? navigator.clipboard.writeText(linkPublico) : Promise.reject()).catch(function () { document.execCommand('copy'); });
-      mostrarAviso('Link copiado. Cole no site, no WhatsApp ou no Instagram.');
-    })]));
   }
 
   // ---------- financeiro ----------
@@ -959,7 +999,11 @@
       })));
     }
 
-    main.append(el('h2', { texto: 'Lançamentos de ' + nomeMes(mes) }));
+    var tituloLista = el('h2', { id: 'titulo-lancamentos', texto: 'Lançamentos de ' + nomeMes(mes) });
+    main.append(tituloLista);
+    var busca = campoBusca('busca-financeiro', 'Buscar lançamentos',
+      'Buscar por cliente, CPF, telefone, nº do processo, parceiro…', estado.filtros.buscaFin,
+      function (v) { estado.filtros.buscaFin = v; desenharLista(); });
     var tipo = el('select', { id: 'filtro-tipo', 'aria-label': 'Tipo de lançamento' }, [
       el('option', { value: '', texto: 'Receitas e despesas' }),
       el('option', { value: 'receita', texto: 'Só receitas' }),
@@ -975,16 +1019,27 @@
     sit.value = estado.filtros.statusFin;
     var lista = el('div', { id: 'lista-financeiro' });
     function desenharLista() {
-      var itens = doMes.filter(function (l) {
+      // Com texto na busca, procura em todos os meses; sem texto, mostra só o mês escolhido.
+      var q = String(estado.filtros.buscaFin || '').trim();
+      var base = q ? ativos('financeiro') : doMes;
+      tituloLista.textContent = q ? 'Resultado da busca (todos os meses)' : 'Lançamentos de ' + nomeMes(mes);
+      var itens = base.filter(function (l) {
         return (!estado.filtros.tipoFin || l.tipo === estado.filtros.tipoFin) &&
-          (!estado.filtros.statusFin || situacao(l) === estado.filtros.statusFin);
+          (!estado.filtros.statusFin || situacao(l) === estado.filtros.statusFin) &&
+          combinaComCliente(q, [l.descricao, l.parceiro, l.categoria, l.observacoes, l.parcela], [], l.clienteId, l.processoId);
       });
-      lista.replaceChildren(itens.length ? tabelaLancamentos(itens, true)
-        : vazio(doMes.length ? 'Nenhum lançamento com esses filtros.' : 'Nenhum lançamento neste mês.'));
+      var total = itens.reduce(function (s, l) { return s + (l.tipo === 'despesa' ? -1 : 1) * centavos(l.valor); }, 0);
+      var emAberto = itens.filter(function (l) { return !l.pagoEm && l.tipo === 'receita'; })
+        .reduce(function (s, l) { return s + centavos(l.valor); }, 0);
+      lista.replaceChildren.apply(lista, itens.length ? [
+        q ? el('p', { class: 'explica', id: 'resumo-busca-fin', texto: itens.length + ' lançamento(s) · saldo ' + fmtReais(total) + ' · receitas em aberto ' + fmtReais(emAberto) }) : '',
+        tabelaLancamentos(itens, true)
+      ].filter(Boolean) : [vazio(q ? 'Nenhum lançamento encontrado para essa busca.'
+        : doMes.length ? 'Nenhum lançamento com esses filtros.' : 'Nenhum lançamento neste mês.')]);
     }
     tipo.addEventListener('change', function () { estado.filtros.tipoFin = tipo.value; desenharLista(); });
     sit.addEventListener('change', function () { estado.filtros.statusFin = sit.value; desenharLista(); });
-    main.append(el('div', { class: 'filtros' }, [tipo, sit]), lista);
+    main.append(el('div', { class: 'filtros' }, [busca, tipo, sit]), lista);
     desenharLista();
 
     main.append(el('h2', { texto: 'Últimos 6 meses' }), graficoMeses(mes));
@@ -1317,6 +1372,13 @@
       }))
     ])]));
     main.append(el('p', { id: 'total-repassar', texto: 'Total a repassar (este mês + pendências): ' + fmtReais(totalPendente) }));
+    main.append(el('div', { class: 'filtros', style: 'margin-top:16px' }, [campoBusca('busca-parceiros', 'Buscar nos repasses',
+      'Buscar por parceiro, cliente, CPF, telefone ou nº do processo…', estado.filtros.buscaParceiros, function (v) {
+        estado.filtros.buscaParceiros = v;
+        renderizar(true);
+        var campo = $('#busca-parceiros');
+        if (campo) { campo.focus(); campo.setSelectionRange(v.length, v.length); }
+      })]));
 
     resumo.forEach(function (r) {
       var secao = el('section', { class: 'parceiro', id: 'parc-' + idSeguro(r.nome) });
@@ -1349,6 +1411,14 @@
         ])
       ]));
       var linhas = r.atrasados.concat(r.pagasNoMes);
+      var q = String(estado.filtros.buscaParceiros || '').trim();
+      if (q && !combina(q, [r.nome], [])) {
+        // Busca por cliente/CPF/processo: mostra só as parcelas que combinam; esconde o parceiro sem nenhuma.
+        linhas = linhas.filter(function (l) {
+          return combinaComCliente(q, [l.descricao, l.observacoes], [], l.clienteId, l.processoId);
+        });
+        if (!linhas.length) return;
+      }
       if (!linhas.length) {
         secao.append(vazio('Nenhuma parcela paga com ' + r.nome + ' em ' + nomeMes(mes) + '.'));
       } else {
@@ -1356,6 +1426,9 @@
       }
       main.append(secao);
     });
+    if (String(estado.filtros.buscaParceiros || '').trim() && !main.querySelector('section.parceiro')) {
+      main.append(vazio('Nenhuma parcela de parceiro encontrada para essa busca em ' + nomeMes(mes) + '.'));
+    }
   }
 
   function idSeguro(t) { return semAcento(t).replace(/[^a-z0-9]+/g, '-'); }
@@ -1412,6 +1485,79 @@
     janela.document.open();
     janela.document.write(html);
     janela.document.close();
+  }
+
+  // ---------- busca geral (botão Buscar ou Ctrl+K) ----------
+  function abrirBuscaGeral() {
+    if (!estado.sessao) return;
+    var caixa = $('#busca-geral');
+    var campo = el('input', { type: 'search', id: 'busca-geral-campo', 'aria-label': 'Buscar em todo o painel',
+      placeholder: 'Nome, CPF, telefone, nº do processo, parceiro…', autocomplete: 'off' });
+    var resultados = el('div', { id: 'busca-geral-resultados', 'aria-live': 'polite' });
+    caixa.replaceChildren(el('div', { class: 'busca-geral' }, [
+      el('div', { class: 'cab-busca' }, [campo, botao('Fechar', function () { caixa.close(); }, 'pequeno')]),
+      resultados
+    ]));
+
+    function ir(acao) { caixa.close(); acao(); }
+    function item(titulo, detalhe, acao) {
+      return el('li', {}, [el('button', { type: 'button', class: 'item-busca', onclick: function () { ir(acao); } }, [
+        el('strong', { texto: titulo }), detalhe ? el('span', { texto: detalhe }) : null
+      ])]);
+    }
+    function grupo(titulo, itens, extra) {
+      if (!itens.length) return null;
+      return el('section', { class: 'grupo-busca' }, [el('h3', { texto: titulo }), el('ul', {}, itens), extra || null]);
+    }
+
+    function desenhar() {
+      var q = campo.value.trim();
+      if (semAcento(q).length < 2 && soNumeros(q).length < 3) {
+        resultados.replaceChildren(el('p', { class: 'explica', texto: 'Digite pelo menos 2 letras ou 3 números.' }));
+        return;
+      }
+      var clientes = ativos('clientes').filter(function (c) { return combinaComCliente(q, [c.observacoes], [], c.id); }).sort(porNome);
+      var processos = ativos('processos').filter(function (p) {
+        return combinaComCliente(q, [p.numero, p.vara, p.assunto], [p.numero], p.clienteId);
+      });
+      var lancs = ativos('financeiro').filter(function (l) {
+        return combinaComCliente(q, [l.descricao, l.parceiro, l.categoria, l.observacoes], [], l.clienteId, l.processoId);
+      }).sort(function (a, b) { return String(b.vencimento).localeCompare(String(a.vencimento)); });
+      var agenda = ativos('agenda').filter(function (a) {
+        return (a.status === 'aguardando' || a.status === 'confirmado') &&
+          combinaComCliente(q, [a.nome, a.email, a.area], [a.telefone], a.clienteId);
+      });
+      var grupos = [
+        grupo('Clientes (' + clientes.length + ')', clientes.slice(0, 8).map(function (c) {
+          return item(c.nome, [fmtCpf(c.cpf), fmtTel(c.telefone), c.cidade].filter(Boolean).join(' · '),
+            function () { location.hash = '#/clientes/' + c.id; });
+        })),
+        grupo('Processos (' + processos.length + ')', processos.slice(0, 8).map(function (p) {
+          return item((p.numero || '(sem número)') + ' · ' + nomeCliente(p.clienteId), [p.assunto, p.status].filter(Boolean).join(' · '),
+            function () { location.hash = '#/clientes/' + p.clienteId; });
+        })),
+        grupo('Financeiro (' + lancs.length + ')', lancs.slice(0, 8).map(function (l) {
+          var sit = situacao(l);
+          return item((l.descricao || 'Lançamento') + (l.parcela ? ' · ' + l.parcela : ''),
+            [nomeCliente(l.clienteId) !== '—' ? nomeCliente(l.clienteId) : l.categoria, fmtData(l.vencimento),
+              fmtReais(centavos(l.valor)), sit === 'pago' ? 'pago' : sit === 'vencido' ? 'vencido' : 'a vencer'].filter(Boolean).join(' · '),
+            function () { location.hash = '#/financeiro'; setTimeout(function () { formLancamento(estado.dados.registros.financeiro[l.id]); }, 0); });
+        }), lancs.length ? botao('Ver todos os ' + lancs.length + ' no Financeiro', function () {
+          ir(function () { estado.filtros.buscaFin = q; location.hash = '#/financeiro'; renderizar(true); });
+        }, 'link') : null),
+        grupo('Agenda (' + agenda.length + ')', agenda.slice(0, 8).map(function (a) {
+          return item(a.nome, fmtDataHora(a.inicio) + ' · ' + (a.status === 'aguardando' ? 'aguardando confirmação' : 'confirmada'),
+            function () { estado.filtros.buscaAgenda = a.nome; location.hash = '#/agenda'; renderizar(true); });
+        }))
+      ].filter(Boolean);
+      resultados.replaceChildren.apply(resultados, grupos.length ? grupos
+        : [el('p', { class: 'explica', texto: 'Nada encontrado para "' + q + '".' })]);
+    }
+
+    campo.addEventListener('input', desenhar);
+    caixa.showModal();
+    campo.focus();
+    desenhar();
   }
 
   // ---------- importação ----------
@@ -1631,6 +1777,13 @@
   });
   $('#janela').addEventListener('close', function () {
     setTimeout(function () { if (estado.renderPendente) renderizar(); }, 0);
+  });
+  $('#botao-buscar').addEventListener('click', abrirBuscaGeral);
+  document.addEventListener('keydown', function (e) {
+    if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K') && estado.sessao && !$('#app').hidden) {
+      e.preventDefault();
+      if (!$('#busca-geral').open && !$('#janela').open) abrirBuscaGeral();
+    }
   });
   window.addEventListener('online', sincronizar);
   document.addEventListener('visibilitychange', function () { if (!document.hidden) sincronizar(); });
