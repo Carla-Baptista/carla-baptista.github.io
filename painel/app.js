@@ -1,7 +1,7 @@
 (function () {
   'use strict';
 
-  var VERSAO_PAINEL = '0.2.1';
+  var VERSAO_PAINEL = '0.2.2';
   var API = (window.SISTEMA && window.SISTEMA.api) || '';
   var CHAVE = { sessao: 'painel.sessao', aparelho: 'painel.aparelho', dados: 'painel.dados' };
   var COLECOES = ['clientes', 'processos'];
@@ -229,6 +229,10 @@
         el('button', { type: 'submit', class: 'btn primario', texto: 'Entrar' }),
         botao('Primeiro acesso ou esqueci minha senha', function () { telaLogin('pedir', { email: email.value }); }, 'link')
       ]);
+      // Esse caminho depende do código por e-mail; só aparece quando ele está ligado no servidor.
+      var linkPedir = form.lastChild;
+      linkPedir.hidden = true;
+      api('ping').then(function (res) { linkPedir.hidden = !(res && res.codigoPorEmail); }).catch(function () {});
       aoEnviar(form, function () {
         return api('entrar', { email: email.value, senha: senha.value, aparelho: ler(CHAVE.aparelho) })
           .then(function (res) {
