@@ -1,7 +1,7 @@
 (function () {
   'use strict';
 
-  var VERSAO_PAINEL = '0.7.1';
+  var VERSAO_PAINEL = '0.7.2';
   var API = (window.SISTEMA && window.SISTEMA.api) || '';
   var CHAVE = { sessao: 'painel.sessao', aparelho: 'painel.aparelho', dados: 'painel.dados' };
   var COLECOES = ['clientes', 'processos', 'financeiro', 'fixas', 'ajustes', 'agenda'];
@@ -1572,6 +1572,7 @@
     var area = el('div', { id: 'previa-importar' });
     arquivo.addEventListener('change', function () {
       estado.msgImportacao = '';
+      estado.importacaoPendente = null;
       area.replaceChildren();
       var f = arquivo.files[0];
       if (!f) return;
@@ -1582,11 +1583,14 @@
           area.append(el('p', { class: 'msg-erro', role: 'alert', texto: 'Este arquivo não é um arquivo de importação do painel.' }));
           return;
         }
-        mostrarPreviaImportacao(area, dados, function () { arquivo.value = ''; });
+        estado.importacaoPendente = dados;
+        mostrarPreviaImportacao($('#previa-importar') || area, dados);
       });
     });
-    // A mensagem fica no estado: a tela é redesenhada quando a sincronização termina.
-    if (estado.msgImportacao) area.append(el('p', { class: 'msg-ok', role: 'status', id: 'importacao-ok', texto: estado.msgImportacao }));
+    // Prévia e mensagem ficam no estado: a sincronização automática redesenha a tela
+    // e, sem isso, o resumo sumia antes de a advogada clicar em "Importar".
+    if (estado.importacaoPendente) mostrarPreviaImportacao(area, estado.importacaoPendente);
+    else if (estado.msgImportacao) area.append(el('p', { class: 'msg-ok', role: 'status', id: 'importacao-ok', texto: estado.msgImportacao }));
     return el('div', { class: 'form-ajustes' }, [
       el('p', { class: 'explica', texto: 'Use para trazer dados de planilhas antigas, depois de convertidas no computador do escritório. Importar o mesmo arquivo de novo não duplica nada.' }),
       el('div', { class: 'campo' }, [el('label', { for: 'arquivo-importar', texto: 'Arquivo de importação (.json)' }), arquivo]),
@@ -1594,7 +1598,7 @@
     ]);
   }
 
-  function mostrarPreviaImportacao(area, arq, aoTerminar) {
+  function mostrarPreviaImportacao(area, arq) {
     var colecoes = Object.keys(arq.dados).filter(function (c) { return COLECOES.indexOf(c) !== -1; });
     var novos = {};
     var total = 0;
@@ -1628,13 +1632,15 @@
               });
             });
             salvarDados();
+            estado.importacaoPendente = null;
             estado.msgImportacao = total + ' registro(s) importados. Enviando para a planilha…';
-            area.replaceChildren(el('p', { class: 'msg-ok', role: 'status', id: 'importacao-ok', texto: estado.msgImportacao }));
-            aoTerminar();
+            mostrarAviso(estado.msgImportacao);
+            renderizar(true);
             sincronizar().then(function () {
               estado.msgImportacao = totalPendentes()
                 ? total + ' registro(s) importados. Ainda enviando para a planilha (sem conexão?).'
                 : total + ' registro(s) importados e salvos na planilha.';
+              mostrarAviso(estado.msgImportacao);
               var ok = $('#importacao-ok');
               if (ok) ok.textContent = estado.msgImportacao;
             });
