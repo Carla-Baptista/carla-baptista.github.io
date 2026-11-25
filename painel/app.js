@@ -1,14 +1,15 @@
 (function () {
   'use strict';
 
-  var VERSAO_PAINEL = '0.7.0';
+  var VERSAO_PAINEL = '0.7.1';
   var API = (window.SISTEMA && window.SISTEMA.api) || '';
   var CHAVE = { sessao: 'painel.sessao', aparelho: 'painel.aparelho', dados: 'painel.dados' };
   var COLECOES = ['clientes', 'processos', 'financeiro', 'fixas', 'ajustes', 'agenda'];
   var STATUS_PROCESSO = ['Em andamento', 'Aguardando prazo', 'Suspenso', 'Encerrado'];
   var FORMAS_PAGAMENTO = ['Pix', 'Boleto', 'Transferência', 'Dinheiro', 'Cartão'];
   var CATEGORIAS_DESPESA = ['Aluguel', 'Contas (luz, água, internet)', 'Sistemas e assinaturas', 'Anuidade OAB',
-    'Impostos', 'Material de escritório', 'Custas processuais', 'Deslocamento', 'Outros'];
+    'Impostos', 'Material de escritório', 'Custas processuais', 'Deslocamento', 'Equipe e serviços', 'Contabilidade',
+    'Pessoal (não é do escritório)', 'Outros'];
   var MENSAGEM_COBRANCA_PADRAO = 'Olá, {nome}! Tudo bem?\n' +
     'Passando para lembrar dos honorários em aberto:\n{lista}\nTotal: {total}\n\n' +
     'Chave Pix: {pix}\n\n' +
